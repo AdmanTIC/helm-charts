@@ -9,7 +9,7 @@ questions:
 #      Resources             #
 ##############################
   - variable: persistence.size
-    default: "100Mi"
+    default: "10Gi"
     required: true
     type: string
     label: Storage volume size
@@ -127,8 +127,6 @@ questions:
     label: SFTP users with keys
     description: "login:ssh-rsa ... ... one per line"
     group: "SFTP"
-    default: |
-      bmalynovytch:ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQC/I3q0n8U/4+YEnUFyqh6nU7pKjUYQEhcu9jGtmYa57lzf8h9ps23RgUXGjT7GJiTASscRIuv9wSfC/6pGdjk7FVFs4lSVyyVfxuq+hRZ/uGpqsbtJqTWzeqOnEIixiLyjSSHe4O9c8kcNj/HMwqQ9k/IlXIA/kH/a5yUkOE1eHZ3r4KIydnGwvccaxqjJTHqvmKMYJAjOt1oe349SgT8ME7L4602Y88T7akVWmvOlP5W4cyi3hFoClv6iOqdjCTxOZX+tIoxJyBDS8lwIbgbf+S7gJhZsBJs1bshmC8U2Jx4tLTCpvNWYc2yE7LjaZweO3Cvz10OJ30nmRbdnCFT+jm5NvraGghLkp3eIXoEXP+yY/QlHc6R0XckgDZWO+N9jS3QAMsq8kEb6Uiy7UUlXvnDiCksgG1elJrTMN5wdyQFb55y3l0G3GaGt7vF+6yBMOay5b6Gy2LhIizrE2GJpd04auAZc8aAhJPUXXpDAK3nIuwwS2Df23jAa+b7bNcCGUCjHGIc3FJmRRtpJHLhC7g1fLxarvcD+HPQvV5l8sEo3yTyY3cTz+vZRMeYvZE9UImM+U0mf27nYdU3aZk49nb+4EDO23HApUB6XpDef7ODa8+dPsuObi3N76WvYO5BqWJ1uDajwyMBfitvR/T3yArdTMsUemhyRxLt8Mv0Thw== bmalynovytch@admantic.fr
 
 
 ##############################
@@ -148,7 +146,7 @@ questions:
 
   - variable: varnish.enabled
     required: true
-    default: true
+    default: false
     type: boolean
     label: Enable Varnish
     group: "Misc."
