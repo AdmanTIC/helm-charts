@@ -1,0 +1,4 @@
+name: apache-varnish-php-mysql-sftp
+description: A Helm chart to run Apache + PHP + MySQL + Varnish + SFTP
+version: 0.1.8
+icon: https://www.admantic.fr/user/assets/logo/admantic-logo-blanc-orange.png

@@ -1,0 +1,68 @@
+---
+image: admantic/apache-varnish-php-mysql-sftp:v0.9
+imagePullPolicy: IfNotPresent
+limits:
+  cpu: 2000m
+  memory: 768M
+requests:
+  cpu: 500m
+  memory: 768M
+
+persistence:
+  size: 10Gi
+
+probes:
+  liveness:
+    url: /
+  readiness:
+    url: /
+
+mysql:
+  config_override: |-
+    [mysqld]
+    skip-host-cache
+    skip-name-resolve
+    performance_schema=0
+    max-connect-errors=10000
+    query_cache_size=16M
+    key_buffer_size=16M
+    read_buffer=60K
+    sort_buffer=1M
+    innodb_buffer_pool_size=64M
+    tmp_table=8M
+    max_allowed_packet=16M
+    thread_stack=192K
+    thread_cache_size=8
+    myisam-recover=BACKUP
+    max_connections=25
+
+php:
+  config_override:
+
+apache:
+  config_override:
+
+secrets:
+  db_name: app
+  db_user: app
+  db_password: ""
+  db_root_password: ""
+
+ingress:
+  enabled: true
+  main_host:
+  alias_redirects: []
+  alternative_names: []
+
+varnish:
+  enabled: true
+  config_override:
+
+sftp:
+  port:
+  uid: 33
+  gid: 33
+  users:
+    with_password:
+    with_key: 
+  externalIP: ""

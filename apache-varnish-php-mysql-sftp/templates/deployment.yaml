@@ -1,0 +1,247 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apache-varnish-php-mysql-sftp-{{ include "short_name" . }}
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "short_name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+{{ include "chart_labels" . | indent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "short_name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+{{ include "chart_labels" . | indent 8 }}
+      annotations:
+        backup.velero.io/backup-volumes: data
+    spec:
+      terminationGracePeriodSeconds: 0
+      initContainers:
+        - name: init-data
+          image: k8s.gcr.io/busybox
+          command:
+            - /bin/sh
+            - -c
+            - >
+              set -e -o pipefail ;
+              mkdir -p /srv/data/html ;
+              chown 33:33 /srv/data/html ;
+              mkdir -p /srv/data/varnish ;
+
+          volumeMounts:
+            - name: data
+              mountPath: /srv/data
+
+      {{- with .Values.imagePullSecret }}
+      imagePullSecrets:
+      - name: {{ . }}
+      {{- end }}
+      containers:
+        - name: web
+          image: {{ .Values.image | quote }}
+          imagePullPolicy: {{ default "IfNotPresent" .Values.imagePullPolicy }}
+          command:
+            - nice
+            - -n20
+            - /usr/local/bin/supervisor-docker-entrypoint.sh
+            - supervisord
+            - -c
+            - /etc/supervisor/supervisord.conf
+          resources:
+            limits:
+            {{- with .Values.limits.memory }}
+              memory: "{{ . }}"
+            {{- end }}
+            {{- with .Values.limits.cpu }}
+              cpu: "{{ . }}"
+            {{- end }}
+            requests:
+            {{- with .Values.requests.memory }}
+              memory: "{{ . }}"
+            {{- end }}
+            {{- with .Values.requests.cpu }}
+              cpu: "{{ . }}"
+            {{- end }}
+          ports:
+            - name: apache
+              containerPort: 80
+              protocol: TCP
+            - name: varnish
+              containerPort: 8080
+              protocol: TCP
+            - name: sftp
+              containerPort: 22
+              protocol: TCP
+
+          env:
+            - name: APP_DB_HOST
+              value: 127.0.0.1
+
+            - name: APP_DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: apache-varnish-php-mysql-sftp-{{ include "short_name" . }}
+                  key: db_name
+
+            - name: APP_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: apache-varnish-php-mysql-sftp-{{ include "short_name" . }}
+                  key: db_password
+
+            - name: APP_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: apache-varnish-php-mysql-sftp-{{ include "short_name" . }}
+                  key: db_user
+
+            {{- with .Values.mysql.config_override }}
+            - name: MYSQL_CONFIG_OVERRIDE
+              value: |-
+{{ . | indent 16 }}
+            {{- end }}
+
+            {{- with .Values.php.config_override }}
+            - name: PHP_CONFIG_OVERRIDE
+              value: |-
+{{ . | indent 16 }}
+            {{- end }}
+
+            {{- with .Values.apache.config_override }}
+            - name: APACHE_CONFIG_OVERRIDE
+              value: |-
+{{ . | indent 16 }}
+            {{- end }}
+
+            {{- with .Values.varnish.config_override }}
+            - name: VARNISH_CONFIG_OVERRIDE
+              value: |-
+{{ . | indent 16 }}
+            {{- end }}
+
+            {{- if .Values.varnish.enabled }}
+            - name: VARNISH_ENABLED
+              value: "y"
+            {{- end }}
+
+            {{- if (gt (len (default "" (toString .Values.sftp.port))) 0) and ( (gt (len (default "" .Values.sftp.users.with_password)) 0) or (gt (len (default "" .Values.sftp.users.with_key)) 0)) }}
+            - name: SFTP_ENABLED
+              value: "y"
+            {{- end }}
+
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: apache-varnish-php-mysql-sftp-{{ include "short_name" . }}
+                  key: db_name
+
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: apache-varnish-php-mysql-sftp-{{ include "short_name" . }}
+                  key: db_password
+
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: apache-varnish-php-mysql-sftp-{{ include "short_name" . }}
+                  key: db_root_password
+
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: apache-varnish-php-mysql-sftp-{{ include "short_name" . }}
+                  key: db_user
+
+
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+          volumeMounts:
+            - name: data
+              mountPath: /srv/data
+
+            - name: sftp-secrets
+              mountPath: /etc/sftp/users.conf
+              subPath: users.conf
+          {{- with .Values.sftp.users.with_key }}
+          {{- range splitList "\n" . }}
+            - name: data
+              mountPath: "/home/{{ (split ":" .)._0 }}/html"
+              subPath: html
+            - name: sftp-secrets
+              mountPath: "/home/{{ (split ":" .)._0 }}/.ssh/keys/id_rsa.pub"
+              subPath: {{ (split ":" .)._0 }}_ssh
+
+          {{- end }}
+          {{- end }}
+          {{- with .Values.extraMounts }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+
+
+
+          {{- with .Values.sftp.users.with_password }}
+          {{- range splitList "\n" . }}
+            - name: data
+              mountPath: "/home/{{ (split ":" .)._0 }}/html"
+              subPath: html
+
+          {{- end }}
+          {{- end }}
+
+          livenessProbe:
+            timeoutSeconds: 15
+            successThreshold: 1
+            failureThreshold: 30
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            httpGet:
+              path: {{ .Values.probes.liveness.url }}
+              port: {{ ternary 8080 80 .Values.varnish.enabled }}
+              httpHeaders:
+              - name: Cookie
+                value: None
+
+          readinessProbe:
+            timeoutSeconds: 15
+            successThreshold: 1
+            failureThreshold: 4
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            httpGet:
+              path: {{ .Values.probes.readiness.url }}
+              port: {{ ternary 8080 80 .Values.varnish.enabled }}
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: apache-varnish-php-mysql-sftp-{{ include "short_name" . }}
+        - name: sftp-secrets
+          secret:
+            secretName: apache-varnish-php-mysql-sftp-{{ include "short_name" . }}-sftp
+
+      {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}

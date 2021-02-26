@@ -1,0 +1,26 @@
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: apache-varnish-php-mysql-sftp-{{ include "short_name" . }}
+# spec:
+#   podSelector:
+#     matchLabels:
+# {{ include "chart_labels_for_network_policy" . | indent 6 }}
+#   ingress:
+#     - from:
+#       - ipBlock:
+#           cidr: 0.0.0.0/0
+#       ports:
+#         - protocol: TCP
+#           port: 22
+#     - from:
+#       - podSelector:
+#           matchLabels:
+#             app: nginx-ingress
+#             release: nginx-ingress
+#         namespaceSelector:
+#           matchLabels:
+#             name: ingress-controller
+#       - podSelector:
+#           matchLabels:
+# {{ include "chart_labels_for_network_policy" . | indent 12 }}
