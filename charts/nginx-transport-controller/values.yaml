@@ -1,4 +1,10 @@
 ---
+args:
+  ingressController:
+    namespace: ""
+    tcpConfigMap: ""
+    udpConfigMap: ""
+
 replicas: 1
 image:
   imagePullSecrets: ""
