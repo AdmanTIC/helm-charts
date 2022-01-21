@@ -14,8 +14,6 @@ spec:
     metadata:
       labels:
         {{- include "chart_labels" $ | nindent 8 }}
-      annotations:
-        checksum/config: {{ include (print $.Template.BasePath "/" (base (dir .Template.Name)) "/configmap.yaml") . | sha256sum }}
     spec:
       terminationGracePeriodSeconds: 0
       serviceAccountName: {{ include "short_name" $ }}-sa

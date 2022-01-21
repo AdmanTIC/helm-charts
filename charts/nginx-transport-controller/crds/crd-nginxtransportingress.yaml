@@ -18,7 +18,7 @@ spec:
     singular: nginxtransportingress
     # shortNames allow shorter string to match resource on the CLI
     shortNames:
-      - se
+      - "ting"
   # version name to use for REST API: /apis/<group>/<version>
   versions:
     - name: v1
