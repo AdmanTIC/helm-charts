@@ -1,0 +1,57 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "short_name" $ }}
+  labels:
+    {{- include "chart_labels" $ | nindent 4 }}
+spec:
+  replicas: {{ default 1 .Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "chart_labels" $ | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "chart_labels" $ | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/" (base (dir .Template.Name)) "/configmap.yaml") . | sha256sum }}
+    spec:
+      terminationGracePeriodSeconds: 0
+      serviceAccountName: {{ include "short_name" $ }}-sa
+      containers:
+        - name: operator
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ eq "latest" .Values.image.tag | ternary "Always" "IfNotPresent" }}
+          args:
+            - "-n"
+            - "{{ .Values.args.ingressController.namespace }}"
+            - "-t"
+            - "{{ .Values.args.ingressController.tcpConfigMap }}"
+            - "-u"
+            - "{{ .Values.args.ingressController.udpConfigMap }}"
+          env:
+{{- with .Values.extraEnv }}
+{{- range $k, $v := . }}
+            - name: "{{ $k }}"
+              value: "{{ tpl $v $ }}"
+{{- end }}
+{{- end }}
+          ports: []
+
+{{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+{{- end }}
+
+{{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+{{- end }}
+{{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+{{- end }}
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

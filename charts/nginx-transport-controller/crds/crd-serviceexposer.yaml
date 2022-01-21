@@ -1,0 +1,74 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  # name must match the spec fields below, and be in the form: <plural>.<group>
+  name: serviceexposers.admantic.fr
+spec:
+  # either Namespaced or Cluster
+  scope: Namespaced
+  # group name to use for REST API: /apis/<group>/<version>
+  group: admantic.fr
+  names:
+    # kind is normally the CamelCased singular type
+    kind: ServiceExposer
+    # plural name to be used in the URL: /apis/<group>/<version>/<plural>
+    plural: serviceexposers
+    # singular name to be used as an alias on the CLI and for display
+    singular: serviceexposer
+    # shortNames allow shorter string to match resource on the CLI
+    shortNames:
+      - se
+  # version name to use for REST API: /apis/<group>/<version>
+  versions:
+    - name: v1
+      # Each version can be enabled/disabled by Served flag
+      served: true
+      # One and only one version must be marked as the storage version
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+              required: ["exposedServices"]  
+              properties:
+                exposedServices:
+                  type: "array"
+                  items:
+                    type: "object"
+                    properties:
+                      targetServiceName:
+                        type: "string"
+                        minLength: 3
+                        description: "Service name on which you want the trafic to be redirected"
+                        pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+                      internalPort:
+                        type: "integer"
+                        minimum: 1
+                        maximum: 65535
+                        description: "Internal port"
+                      externalPort:
+                        type: "integer"
+                        minimum: 1
+                        maximum: 65535
+                        description: "External port"
+                      protocol:
+                        type: "string"
+                        minLength: 3
+                        maxLength: 3
+                        description: "Service transport protcol (TCP or UDP)"
+                        pattern: ^(?i)(tcp|udp)$
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+      additionalPrinterColumns:
+        - name: STATUS
+          type: "string"
+          jsonPath: .status.configStatus
+        - name: EXTERNAL-PORTS
+          type: "string"
+          jsonPath: .spec.exposedServices
+          format: password
