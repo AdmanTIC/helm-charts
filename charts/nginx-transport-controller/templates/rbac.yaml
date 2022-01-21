@@ -38,7 +38,7 @@ rules:
 - apiGroups:
     - admantic.fr
   resources:
-    - serviceexposers
+    - nginxtransportingresses
   verbs:
     - get
     - list
