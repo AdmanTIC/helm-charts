@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   # name must match the spec fields below, and be in the form: <plural>.<group>
-  name: serviceexposers.admantic.fr
+  name: nginxtransportingresses.admantic.fr
 spec:
   # either Namespaced or Cluster
   scope: Namespaced
@@ -11,11 +11,11 @@ spec:
   group: admantic.fr
   names:
     # kind is normally the CamelCased singular type
-    kind: ServiceExposer
+    kind: NginxTransportIngress
     # plural name to be used in the URL: /apis/<group>/<version>/<plural>
-    plural: serviceexposers
+    plural: nginxtransportingresses
     # singular name to be used as an alias on the CLI and for display
-    singular: serviceexposer
+    singular: nginxtransportingress
     # shortNames allow shorter string to match resource on the CLI
     shortNames:
       - se
