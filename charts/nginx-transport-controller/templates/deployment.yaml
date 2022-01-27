@@ -22,8 +22,8 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ eq "latest" .Values.image.tag | ternary "Always" "IfNotPresent" }}
           args:
-            - "-n"
-            - "{{ .Values.args.ingressController.namespace }}"
+            - "-s"
+            - "{{ .Values.args.ingressController.service }}"
             - "-t"
             - "{{ .Values.args.ingressController.tcpConfigMap }}"
             - "-u"

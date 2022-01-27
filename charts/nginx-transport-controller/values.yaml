@@ -1,7 +1,7 @@
 ---
 args:
   ingressController:
-    namespace: ""
+    service: ""
     tcpConfigMap: ""
     udpConfigMap: ""
 
