@@ -22,6 +22,8 @@ rules:
     resources:
       - services
     verbs:
+      - create
+      - delete
       - update
       - patch
       - get

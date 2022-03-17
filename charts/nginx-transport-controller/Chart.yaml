@@ -4,6 +4,6 @@ name: nginx-transport-controller
 description: A Helm chart for NGINX Transport Controller
 icon: https://www.admantic.fr/user/assets/logo/admantic-logo-blanc-orange.png
 type: application
-version: 0.0.1
+version: 0.0.2
 
 dependencies: []
