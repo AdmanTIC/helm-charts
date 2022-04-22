@@ -1,0 +1,20 @@
+---
+image: gitlab-registry.admantic.fr/internals/docker/docker_postfix:v1.0.3
+imagePullPolicy: IfNotPresent
+
+replicas: 2
+limits:
+  cpu: 1000m
+  memory: 256M
+requests:
+  cpu: 200m
+  memory: 128M
+
+smtp:
+  relay:
+    host: ""
+    port: "25"
+    myhostname: ""
+    username: ""
+    password: ""
+    networks: "10.0.0.0/8"

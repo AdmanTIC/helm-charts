@@ -1,0 +1,4 @@
+name: postfix
+description: A Helm chart to run a Postfix relay
+version: 0.1.2
+icon: https://www.admantic.fr/user/assets/logo/admantic-logo-blanc-orange.png
