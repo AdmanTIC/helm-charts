@@ -4,6 +4,21 @@ image:
   version: v0.2
   imagePullPolicy: ""
 
+labels: {}
+
+## pod(Anti)Affinity
+# e.g. :
+# affinity:
+#   podAffinity:
+#     requiredDuringSchedulingIgnoredDuringExecution:
+#     - labelSelector:
+#         matchExpressions:
+#         - key: <LABEL>
+#           operator: In
+#           values:
+#           - <VALUE>
+affinity: {}
+
 ## Array of VIPs
 ## Array contains Failover IP to move.
 # e.g. :

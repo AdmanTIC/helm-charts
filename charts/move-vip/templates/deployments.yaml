@@ -6,6 +6,9 @@ metadata:
   name: {{ include "short_name" $ }}-{{ regexReplaceAll "\\W+" (index $.Values.vips .) "-" }}
   labels:
 {{ include "chart_labels" $ | indent 4 }}
+{{- with $.Values.labels }}
+  {{- toYaml $.Values.labels | nindent 4 }}
+{{- end }}
 spec:
   replicas: 1
   selector:
@@ -20,6 +23,10 @@ spec:
         app.kubernetes.io/instance: {{ $.Release.Name }}
 {{ include "chart_labels" $ | indent 8 }}
     spec:
+      {{- with $.Values.affinity }}
+      affinity:
+        {{- toYaml $.Values.affinity | nindent 8 }}
+      {{- end }}
       securityContext:
         fsGroup: 0
       terminationGracePeriodSeconds: 0
