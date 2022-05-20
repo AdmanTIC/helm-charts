@@ -1,0 +1,7 @@
+name: move-vip
+description: A Helm chart dedicated to move VIP according to IP host
+version: 0.0.4
+keywords:
+  - scaleway
+  - ovh
+  - vip

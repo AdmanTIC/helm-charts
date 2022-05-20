@@ -1,0 +1,28 @@
+---
+image:
+  repository: admantic/move-vips
+  version: v0.2
+  imagePullPolicy: ""
+
+## Array of VIPs
+## Array contains Failover IP to move.
+# e.g. :
+# vips:
+#   - <IP#1>
+#   - <IP#2>
+#   - ...
+#   - <IP#N>
+vips: []
+
+secrets:
+  ## OVH-API :
+  # ovh:
+  #   applicationKey: 
+  #   applicationSecret: 
+  #   consumerKey: 
+  #   endpoint: 
+  ovh: {}
+  ## SCALEWAY-API :
+  # scaleway:
+  #   apiToken:
+  scaleway: {}

@@ -1,0 +1,80 @@
+{{- range untilStep 0 (len .Values.vips) 1 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "short_name" $ }}-{{ regexReplaceAll "\\W+" (index $.Values.vips .) "-" }}
+  labels:
+{{ include "chart_labels" $ | indent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "short_name" $ }}
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+{{ include "chart_labels" $ | indent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "short_name" $ }}
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+{{ include "chart_labels" $ | indent 8 }}
+    spec:
+      securityContext:
+        fsGroup: 0
+      terminationGracePeriodSeconds: 0
+      hostNetwork: true
+      initContainers:
+        - name: "set-vip"
+          image: k8s.gcr.io/busybox
+          securityContext:
+            privileged: true
+            capabilities:
+              add: 
+                - "NET_ADMIN"
+          command:
+            - '/bin/sh'
+            - '-c'
+            - |
+              ip a | grep -qo "inet {{ (index $.Values.vips .) }}" || ip a add {{ (index $.Values.vips .) }}/32 dev lo
+      containers:
+        - name: "move-vip"
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.version }}"
+          imagePullPolicy: {{ default "IfNotPresent" $.Values.image.imagePullPolicy }}
+          resources: {}
+          securityContext:
+            privileged: true
+            capabilities:
+              add: 
+                - "NET_ADMIN"
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+{{- with $.Values.secrets.ovh }}
+            - name: OVH_APPLICATION_KEY
+              value: "{{ $.Values.secrets.ovh.applicationKey }}"
+            - name: OVH_APPLICATION_SECRET
+              value: "{{ $.Values.secrets.ovh.applicationSecret }}"
+            - name: OVH_APPLICATION_CONSUMER_KEY
+              value: "{{ $.Values.secrets.ovh.consumerKey }}"
+            - name: OVH_API_ENDPOINT
+              value: "{{ $.Values.secrets.ovh.endpoint }}"
+              
+{{- end }}
+{{- with $.Values.secrets.scaleway }}
+            - name: SCALEWAY_API_TOKEN
+              value: "{{ $.Values.secrets.scaleway.apiToken }}"
+              
+{{- end }}
+{{- with $.Values.secrets.scaleway }}
+
+{{- end }}
+          command:
+            - /bin/sh
+            - -c
+            - >
+              set -e ;
+              python /opt/move-vip.py --ip {{ (index $.Values.vips .) }}
+{{- end }}
