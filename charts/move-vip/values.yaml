@@ -6,6 +6,8 @@ image:
 
 labels: {}
 
+podLabels: {}
+
 ## pod(Anti)Affinity
 # e.g. :
 # affinity:

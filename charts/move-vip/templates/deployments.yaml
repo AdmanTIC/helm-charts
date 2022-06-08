@@ -21,7 +21,7 @@ spec:
       labels:
         app.kubernetes.io/name: {{ include "short_name" $ }}
         app.kubernetes.io/instance: {{ $.Release.Name }}
-        {{- with $.Values.labels }}
+        {{- with $.Values.podLabels }}
           {{- toYaml $.Values.labels | nindent 8 }}
         {{- end }}
 {{ include "chart_labels" $ | indent 8 }}
