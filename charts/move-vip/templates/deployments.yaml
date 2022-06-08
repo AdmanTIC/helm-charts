@@ -33,7 +33,7 @@ spec:
       hostNetwork: true
       initContainers:
         - name: "set-vip"
-          image: k8s.gcr.io/busybox
+          image: busybox:stable
           securityContext:
             privileged: true
             capabilities:
