@@ -1,0 +1,4 @@
+apiVersion: v2
+name: pv-heartbeat
+description: PV HeartBeat aims to detect failing PVs
+version: 0.1.0

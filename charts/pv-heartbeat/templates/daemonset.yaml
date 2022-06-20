@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "pv-heartbeat.fullname" . }}
+  labels:
+    {{- include "pv-heartbeat.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "pv-heartbeat.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/configmap: {{ include (print $.Template.BasePath "/configmap.yaml") $ | sha256sum }}
+      {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "pv-heartbeat.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "pv-heartbeat.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: pv-heartbeat
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+          - /bin/sh
+          - -ec
+          - |
+            apk add bash grep curl jq;
+            exec bash -e /usr/bin/heartbeat.sh
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - mountPath: /host-pods
+              name: host-pods
+              mountPropagation: HostToContainer
+            - name: scripts
+              mountPath: /usr/bin/heartbeat.sh
+              readOnly: true
+              subPath: heartbeat.sh
+      terminationGracePeriodSeconds: 0
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: host-pods
+          hostPath:
+            path: /var/lib/kubelet/pods
+            type: ""
+        - name: scripts
+          configMap:
+            name: {{ include "pv-heartbeat.fullname" . }}
+            items:
+              - key:  heartbeat.sh
+                path: heartbeat.sh
+                mode: 448 # == 0700

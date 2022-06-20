@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pv-heartbeat.fullname" . }}
+  labels:
+    {{- include "pv-heartbeat.labels" . | nindent 4 }}
+data:
+  heartbeat.sh: |
+    #!/bin/bash
+    set -e
+
+    HEARTBEAT_TIMEOUT={{ .Values.heartbeat.timeout }}
+    HEARTBEAT_INTERVAL={{ .Values.heartbeat.interval }}
+
+    APISERVER=https://kubernetes.default.svc
+    SERVICEACCOUNT=/var/run/secrets/kubernetes.io/serviceaccount
+    TOKEN=$(cat ${SERVICEACCOUNT}/token)
+    CACERT=${SERVICEACCOUNT}/ca.crt
+
+    echo "** Downloading kubectl"
+    curl -sL -o /usr/bin/kubectl https://storage.googleapis.com/kubernetes-release/release/$(curl -s --cacert ${CACERT} --header "Authorization: Bearer ${TOKEN}" -X GET ${APISERVER}/version | jq -r .gitVersion)/bin/linux/amd64/kubectl
+    chmod +x /usr/bin/kubectl
+
+    echo "** Entering heartbeat loop"
+    while :; do
+      echo "*** New heartbeat cycle"
+      grep -P "volumes/kubernetes.io~({{ .Values.heartbeat.pv_types_pattern }})" /proc/mounts | awk '{print $2}' | while read PV_PATH ; do
+        POD_UID=$(cut -d/ -f3 <<<$PV_PATH)
+        PV_NAME=$(cut -d/ -f6 <<<$PV_PATH)
+
+        echo "**** Checking $PV_NAME"
+        if ! timeout $HEARTBEAT_TIMEOUT touch $PV_PATH/.pv-heartbeat.lock ; then
+          POD_NS_NAME=$(eval $(printf "kubectl get pods -A -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid | awk '\$3 == \"%s\" {print \$1 \" \" \$2}'" $POD_UID))
+          POD_NS=${POD_NS_NAME%% *}
+          POD_NAME=${POD_NS_NAME##* }
+          echo "^^^^ $POD_NS/$POD_NAME seems to have troubles to access $PV_NAME, deleting it."
+          {{ if not .Values.heartbeat.dry_run }}
+          kubectl delete pod -n "$POD_NS" "$POD_NAME"
+          {{ end }}
+          echo
+        fi
+      done
+      echo "*** End heartbeat cycle"
+      echo
+      sleep $HEARTBEAT_INTERVAL
+    done
+    echo "** Exited heartbeat loop"
