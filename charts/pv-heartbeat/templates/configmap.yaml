@@ -33,10 +33,14 @@ data:
           POD_NS_NAME=$(eval $(printf "kubectl get pods -A -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid | awk '\$3 == \"%s\" {print \$1 \" \" \$2}'" $POD_UID))
           POD_NS=${POD_NS_NAME%% *}
           POD_NAME=${POD_NS_NAME##* }
-          echo "^^^^ $POD_NS/$POD_NAME seems to have troubles to access $PV_NAME, deleting it."
-          {{ if not .Values.heartbeat.dry_run }}
-          kubectl delete pod -n "$POD_NS" "$POD_NAME"
-          {{ end }}
+          if [ -n "$POD_NS" -a -n "$POD_NAME" ] ; then
+            echo "^^^^ $POD_NS/$POD_NAME seems to have troubles to access $PV_NAME, deleting it."
+            {{ if not .Values.heartbeat.dry_run }}
+            kubectl delete pod -n "$POD_NS" "$POD_NAME"
+            {{ end }}
+          else
+            echo "^^^ Stale and dead mount found, ignoring."
+          fi
           echo
         fi
       done
