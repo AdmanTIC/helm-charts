@@ -45,7 +45,7 @@ spec:
             - /bin/bash
             - -c
             - |
-               /opt/bitnami/scripts/nginx/run.sh &
+              /opt/bitnami/scripts/nginx/run.sh &
 
               # timeout reimplement
               # credits : https://stackoverflow.com/a/24416732
