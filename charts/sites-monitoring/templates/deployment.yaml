@@ -45,7 +45,7 @@ spec:
             - /bin/bash
             - -c
             - |
-              /opt/bitnami/scripts/nginx/run.sh &
+              nginx || exit 1
 
               # timeout reimplement
               # credits : https://stackoverflow.com/a/24416732
@@ -95,7 +95,7 @@ spec:
               while :; do
                 return_msg="UNKNOWN - Cannot retrieve sites unavaibility"
                 return_msg=$(run_cmd "check_avaibility" {{ $.Values.interval }}) || return_msg="UNKNOWN - Timeout : checks exceed interval ({{ $.Values.interval }}s)"
-                echo "$return_msg" > /app/check_sites_avaibility
+                echo "$return_msg" > /usr/share/nginx/html/check_sites_avaibility
               done
 
           env:

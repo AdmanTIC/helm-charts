@@ -1,8 +1,8 @@
 # Image
 image:
   registry: docker.io
-  repository: bitnami/nginx
-  tag: 1.22.0
+  repository: nginx
+  tag: 1.23.1-perl
   imagePullPolicy: IfNotPresent
 
 # Extra deployment labels
