@@ -1,0 +1,107 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "short_name" $ }}
+  labels: 
+    {{ include "chart_labels" $ | nindent 4 }}
+{{- with $.Values.labels }}
+  {{- toYaml $.Values.labels | nindent 4 }}
+{{- end }}
+{{- with $.Values.annotations }}
+  annotations:
+    {{- toYaml $.Values.annotations | nindent 4 }}
+{{- end }}
+
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{ include "chart_labels" $ | nindent 6 }}
+      {{- with $.Values.podLabels }}
+        {{- toYaml $.Values.labels | nindent 6 }}
+      {{- end }}
+  template:
+    metadata:
+      labels:
+        {{ include "chart_labels" $ | nindent 8 }}
+        {{- with $.Values.podLabels }}
+          {{- toYaml $.Values.podLabels | nindent 8 }}
+        {{- end }}
+      {{- with $.Values.annotations }}
+      annotations:
+          {{- toYaml $.Values.annotations | nindent 8 }}
+      {{- end }}
+
+    spec:
+      containers:
+        - name: sites-monitoring
+          image: "{{ $.Values.image.registry }}/{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ default "IfNotPresent" $.Values.image.imagePullPolicy }}
+
+          command:
+            - /bin/bash
+            - -c
+            - |
+              # timeout reimplement
+              # credits : https://stackoverflow.com/a/24416732
+              function run_cmd { 
+                  cmd="$1"; timeout="$2";
+                  grep -qP '^\d+$' <<< $timeout || timeout=10
+
+                  ( 
+                      eval "$cmd" &
+                      child=$!
+                      trap -- "" SIGTERM 
+                      (       
+                              sleep $timeout
+                              kill $child 2> /dev/null 
+                      ) &     
+                      wait $child
+                  )
+              }
+
+              function check_avaibility {
+                status_code=0
+                unavailable_sites=""
+                unavailable_sites_number=0
+                total_sites_number={{ $.Values.sites | len }}
+                for SITE in {{ $.Values.sites | join " " }}; do
+                  status_code=$(curl -m {{ $.Values.timeout }} -LsIw "%{http_code}" "$SITE" -o /dev/null)
+                  if [[ "$status_code" -ne 200 ]]; then
+                    unavailable_sites="$SITE ${unavailable_sites}"
+                    unavailable_sites_number=$(( unavailable_sites_number + 1 ))
+                  fi
+                done
+                return_msg=""
+                unavailable_sites_percent=$(( (unavailable_sites_number * 100 + total_sites_number - 1) / total_sites_number ))
+
+                if [[ "$unavailable_sites_number" -eq 0 ]]; then
+                  return_msg="OK - All sites are available"
+                elif [[ "$unavailable_sites_percent" -ge {{ $.Values.critical }} ]]; then
+                  return_msg="CRITICAL - $unavailable_sites_percent% ($unavailable_sites_number/$total_sites_number) of the sites are unavailable : $unavailable_sites"
+                elif [[ "$unavailable_sites_percent" -ge {{ $.Values.warning }} ]]; then
+                  return_msg="WARNING - $unavailable_sites_percent% ($unavailable_sites_number/$total_sites_number) of the sites are unavailable : $unavailable_sites"
+                else
+                  return_msg="UNKNOWN - Cannot retrieve sites unavaibility"
+                fi
+                echo "$return_msg"
+              }
+
+              while :; do
+                return_msg="UNKNOWN - Cannot retrieve sites unavaibility"
+                return_msg=$(run_cmd "check_avaibility" {{ $.Values.interval }}) || return_msg="UNKNOWN - Timeout : checks exceed interval ({{ $.Values.interval }}s)"
+                echo "$return_msg" > /app/check_sites_avaibility
+              done
+
+          env:
+            {{- with $.Values.extraEnv }}
+            {{- range $k, $v := . }}
+            - name: {{ $k | quote }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- end }}
+          {{- if .Values.resources }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- end }}

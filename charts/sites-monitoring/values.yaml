@@ -1,0 +1,78 @@
+# Image
+image:
+  registry: docker.io
+  repository: bitnami/nginx
+  tag: 1.22.0
+  imagePullPolicy: IfNotPresent
+
+# Extra deployment labels
+labels: {}
+
+# Deployment annotations
+annotations:
+
+# Extra pod labels
+podLabels: {}
+
+# Extra pod annotations
+podAnnotations: {}
+
+# Pod extra envs.
+extraEnv: {}
+
+# Define resources req/lim
+# e.g. :
+# resources:
+#   requests:
+#     cpu:
+#     memory:
+#   limits:
+#     cpu:
+#     memory:
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    memory: 1Gi
+
+# Sites to monitor (list)
+# e.g. :
+# sites:
+#   - abc.com
+#   - def.com
+#   - ghi.fr
+sites:
+  - abc.com
+  - def.com
+  - ghi.fr
+  - qsfjqshgfqsj.com
+  - qsjkfgqhjkflqlm.fr
+  - qzegvqejizkjnfqokzlekgs.ge
+
+# Sites unavaibility thresholds above which alerts are considered "WARNING" or "CRITICAL" 
+critical: 1
+warning: 1
+
+# Curl (test) timeout (in seconds)
+timeout: 10
+
+# Check interval (in seconds)
+interval: 90
+
+ingress:
+  enabled: false
+  basicAuth:
+    enabled: false
+    # Define users list :
+    # <user>: <htpasswd-hashed-password>
+    auth: {}
+  pathType: ImplementationSpecific
+  annotations: {}
+  tls:
+    - hosts: []
+  hosts:
+    - host: ""
+      paths:
+        - ""
+
