@@ -42,13 +42,7 @@ resources:
 #   - abc.com
 #   - def.com
 #   - ghi.fr
-sites:
-  - abc.com
-  - def.com
-  - ghi.fr
-  - qsfjqshgfqsj.com
-  - qsjkfgqhjkflqlm.fr
-  - qzegvqejizkjnfqokzlekgs.ge
+sites: []
 
 # Sites unavaibility thresholds above which alerts are considered "WARNING" or "CRITICAL" 
 critical: 1
