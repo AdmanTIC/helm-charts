@@ -38,11 +38,15 @@ spec:
         - name: sites-monitoring
           image: "{{ $.Values.image.registry }}/{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
           imagePullPolicy: {{ default "IfNotPresent" $.Values.image.imagePullPolicy }}
-
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsUser: 0
           command:
             - /bin/bash
             - -c
             - |
+               /opt/bitnami/scripts/nginx/run.sh &
+
               # timeout reimplement
               # credits : https://stackoverflow.com/a/24416732
               function run_cmd { 
