@@ -44,7 +44,7 @@ resources:
 #   - ghi.fr
 sites: []
 
-# Sites unavaibility thresholds above which alerts are considered "WARNING" or "CRITICAL" 
+# Sites unavailability thresholds above which alerts are considered "WARNING" or "CRITICAL" 
 critical: 1
 warning: 1
 
