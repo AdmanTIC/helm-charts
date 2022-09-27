@@ -72,6 +72,7 @@ spec:
                 total_sites_number={{ $.Values.sites | len }}
                 for SITE in {{ $.Values.sites | join " " }}; do
                   status_code=$(curl -Lm {{ $.Values.timeout }} -LsIw "%{http_code}" "$SITE" -o /dev/null)
+                  sleep 0.1
                   if [[ "$status_code" -ne 200 ]]; then
                     unavailable_sites="$SITE ${unavailable_sites}"
                     unavailable_sites_number=$(( unavailable_sites_number + 1 ))
