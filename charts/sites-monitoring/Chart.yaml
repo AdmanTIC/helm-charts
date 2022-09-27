@@ -1,4 +1,4 @@
 apiVersion: v2
 name: sites-monitoring
 description: Check availability of sites specified in ConfigMap
-version: 0.0.8
+version: 0.0.9
