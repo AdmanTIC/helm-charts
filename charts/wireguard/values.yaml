@@ -1,0 +1,23 @@
+---
+image: cmulk/wireguard-docker:alpine
+persistence:
+  size: 100Mi
+  storageClass:
+# Internal Wireguard port which is forwarded by `exposed_port`
+port: 51820
+# Unique in cluster scale and between 30000-32767
+exposed_port: 31325
+externalIP:
+# Wireguard configuration file used to declare wg interface :
+# Public/Private keys will be generated if they do not exist
+# Please, leave 'PrivateKey =' as placeholder e.g. :
+config: |+
+  [Interface]
+  ListenPort = 51820
+  PrivateKey =
+  Address = 172.254.0.1/27
+
+  # [Peer]
+  # PublicKey  =
+  # AllowedIPs = 172.254.0.2/27
+  # PersistentKeepalive = 15

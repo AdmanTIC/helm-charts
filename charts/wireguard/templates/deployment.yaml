@@ -1,0 +1,73 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "short_name" $ }}-wireguard
+  labels:
+    {{- include "chart_labels" $ | nindent 4 }}
+spec:
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "chart_labels" $ | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "chart_labels" $ | nindent 8 }}
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: {{ include "short_name" . }}-wg-conf-pvc
+          persistentVolumeClaim:
+            claimName: {{ include "short_name" . }}-wg-conf-pvc
+
+      initContainers:
+        - name: wireguard-conf
+          image: {{ .Values.image | quote }}
+          env:
+            - name: WG_CONFIG
+              value: {{ .Values.config | b64enc }}
+          command:
+            - /bin/sh
+            - -c
+            - >
+              umask 077;
+              PRIVATE_KEY="PrivateKey = $(wg genkey)" ;
+              [ -f /etc/wireguard/wg0.conf ] && PRIVATE_KEY=$(grep "PrivateKey " /etc/wireguard/wg0.conf) ;
+              echo $WG_CONFIG | base64 -d > /etc/wireguard/wg0.conf ;
+              sed -e "s#^PrivateKey.*#$PRIVATE_KEY#" -i /etc/wireguard/wg0.conf;
+              echo "Wireguard interface configuration done";
+              echo "Public key : $(echo "$PRIVATE_KEY" | cut -d= -f2- | tr -d '[:space:]' | wg pubkey)";
+
+          volumeMounts:
+            - mountPath: /etc/wireguard
+              name: {{ include "short_name" . }}-wg-conf-pvc
+              subPath: wireguard
+
+      containers:
+        - name: wireguard
+          image: {{ .Values.image | quote }}
+          imagePullPolicy: {{ default "IfNotPresent" .Values.imagePullPolicy }}
+          securityContext:
+            privileged: true
+            capabilities:
+              add:
+                - NET_ADMIN
+          ports:
+            - containerPort: {{ .Values.port }}
+              protocol: UDP
+          volumeMounts:
+            - mountPath: /etc/wireguard
+              name: {{ include "short_name" . }}-wg-conf-pvc
+              subPath: wireguard
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                 - /bin/sh
+                 - -c
+                 - echo 1 > /proc/sys/net/ipv4/ip_forward

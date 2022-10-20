@@ -1,0 +1,23 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "short_name" . }}-svc
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+spec:
+  selector:
+    {{- include "chart_labels" $ | nindent 6 }}
+
+  type: NodePort
+  ports:
+    - port: {{ .Values.exposed_port }}
+      nodePort: {{ .Values.exposed_port }}
+      targetPort: {{ .Values.port }}
+      name: wireguard
+      protocol: UDP
+  {{- with .Values.externalIP }}
+  externalTrafficPolicy: Local
+  externalIPs:
+    - {{ . }}
+  {{- end }}

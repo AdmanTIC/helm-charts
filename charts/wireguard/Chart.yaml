@@ -1,0 +1,8 @@
+---
+apiVersion: v2
+name: wireguard
+description: Chart Helm for Wireguard
+icon: https://www.wireguard.com/img/wireguard.svg
+type: application
+version: 0.1.8
+appVersion: 1.0.20200510
