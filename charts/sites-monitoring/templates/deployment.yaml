@@ -51,7 +51,7 @@ spec:
               # credits : https://stackoverflow.com/a/24416732
               function run_cmd { 
                   cmd="$1"; timeout="$2";
-                  grep -qP '^\d+$' <<< $timeout || timeout=10
+                  grep -qP '^\d+$' <<< $timeout || timeout=90
 
                   ( 
                       eval "$cmd" &
@@ -65,19 +65,29 @@ spec:
                   )
               }
 
+              function check_site() {
+                URL=$1
+                START=$(date +%s)
+                RC=$(curl -Lm {{ $.Values.timeout }} -sIw "%{http_code}" "$URL" -o /dev/null)
+                END=$(date +%s)
+                echo "$(( $END - $START)) 200 $1"
+              }
+
               function check_availability {
+                WORKERS=10
                 status_code=0
                 unavailable_sites=""
                 unavailable_sites_number=0
                 total_sites_number={{ $.Values.sites | len }}
+                truncate -s0 /dev/shm/check_report
                 for SITE in {{ $.Values.sites | join " " }}; do
-                  status_code=$(curl -Lm {{ $.Values.timeout }} -LsIw "%{http_code}" "$SITE" -o /dev/null)
-                  sleep 0.1
-                  if [[ "$status_code" -ne 200 ]]; then
-                    unavailable_sites="$SITE ${unavailable_sites}"
-                    unavailable_sites_number=$(( unavailable_sites_number + 1 ))
-                  fi
+                  while [ $(jobs -r | wc -l) -gt $WORKERS ] ; do sleep 0.1 ; done
+                  check_site "$SITE" >> /dev/shm/check_report
                 done
+
+                unavailable_sites_number=$(cat /dev/shm/check_report | awk '{ if ($2 >= 400) print $3 }' | wc -l)
+                unavailable_sites=$(cat /dev/shm/check_report | awk '{ if ($2 >= 400) print $2"/"$3 }')
+
                 return_msg=""
                 unavailable_sites_percent=$(( (unavailable_sites_number * 100 + total_sites_number - 1) / total_sites_number ))
 
