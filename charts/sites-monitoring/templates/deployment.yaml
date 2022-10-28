@@ -70,7 +70,7 @@ spec:
                 START=$(date +%s)
                 RC=$(curl -Lm {{ $.Values.timeout }} -sIw "%{http_code}" "$URL" -o /dev/null)
                 END=$(date +%s)
-                echo "$(( $END - $START)) 200 $1"
+                echo "$(( $END - $START)) $RC $1"
               }
 
               function check_availability {
