@@ -39,6 +39,17 @@ extraEnvVars:
   DOLI_DB_NAME: "{{ .Values.mariadb.auth.database }}"
   PHP_INI_DATE_TIMEZONE: "Europe/Paris"
 
+ingress:
+  enabled: false
+  pathType: ImplementationSpecific
+  hostname: ""
+  path: /
+  annotations:
+    kubernetes.io/tls-acme: "true"
+  ingressClassName: nginx
+  tls: true
+  extraHosts: []
+
 mariadb:
   enabled: true
   auth:

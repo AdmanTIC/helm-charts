@@ -1,0 +1,58 @@
+---
+{{- if $.Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "short_name" $ }}
+  labels:
+    {{- include "chart_labels" $ | nindent 4 }}
+  {{- if or $.Values.ingress.annotations $.Values.global.commonAnnotations }}
+  annotations:
+    {{- if  $.Values.ingress.annotations }}
+    {{- $.Values.ingress.annotations | toYaml | nindent 4 }}
+    {{- end }}
+    {{- if $.Values.global.commonAnnotations }}
+    {{- $.Values.global.commonAnnotations | toYaml | nindent 4 }}
+    {{- end }}
+  {{- end }}
+
+spec:
+  ingressClassName: {{ $.Values.ingress.ingressClassName | quote }}
+
+  tls:
+    - hosts:
+        - {{ $.Values.ingress.hostname }}
+      {{- with $.Values.ingress.extraHosts }}
+      {{- range . }}
+        - {{ . }}
+      {{- end }}
+      {{- end }}
+      secretName: {{ include "short_name" $ }}-tls
+
+  rules:
+    - host: {{ $.Values.ingress.hostname }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "short_name" $ }}
+                port:
+                  name: dolibarr
+  {{- with $.Values.ingress.extraHosts }}
+  {{- range . }}
+    - host: {{ . }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "short_name" $ }}
+                port:
+                  name: dolibarr
+  {{- end }}
+  {{- end }}
+
+{{- end }}
