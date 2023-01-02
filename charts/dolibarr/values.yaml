@@ -34,11 +34,11 @@ startupProbe: {}
 readinessProbe: {}
 resources: {}
 extraEnvVars:
-  DOLI_DB_HOST: {{ .Release.Name }}-mariadb.{{ .Release.Namespace }}.svc.cluster.local
-  DOLI_DB_USER: root
-  DOLI_DB_PASSWORD: {{ .Values.mariadb.auth.rootPassword }}
-  DOLI_DB_NAME: {{ .Values.mariadb.auth.database }}
-  PHP_INI_DATE_TIMEZONE: 'Europe/Paris'
+  DOLI_DB_HOST: "{{ .Release.Name }}-mariadb.{{ .Release.Namespace }}.svc.cluster.local"
+  DOLI_DB_USER: "root"
+  DOLI_DB_PASSWORD: "{{ .Values.mariadb.auth.rootPassword }}"
+  DOLI_DB_NAME: "{{ .Values.mariadb.auth.database }}"
+  PHP_INI_DATE_TIMEZONE: "Europe/Paris"
 
 mariadb:
   enabled: true
