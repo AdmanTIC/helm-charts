@@ -1,0 +1,53 @@
+---
+global:
+  commonAnnotations: {}
+  imagePullSecrets: []
+
+persistence:
+  enabled: false
+  storageClass: ""
+  size: ""
+  labels: {}
+  annotations: {}
+
+service:
+  type: ClusterIP
+  port: 80
+  clusterIP: ""
+  externalTrafficPolicy: Cluster
+  annotations: {}
+
+annotations: {}
+podAnnotations: {}
+replicas: 1
+securityContext: {}
+image:
+  imagePullSecrets: []
+  registry: docker.io
+  repository: tuxgasy/dolibarr
+  tag: "16.0.3"
+  imagePullPolicy: IfNotPresent
+command: ""
+containerPort: 80
+livenessProbe: {}
+startupProbe: {}
+readinessProbe: {}
+resources: {}
+extraEnvVars:
+  DOLI_DB_HOST: {{ .Release.Name }}-mariadb.{{ .Release.Namespace }}.svc.cluster.local
+  DOLI_DB_USER: root
+  DOLI_DB_PASSWORD: {{ .Values.mariadb.auth.rootPassword }}
+  DOLI_DB_NAME: {{ .Values.mariadb.auth.database }}
+  PHP_INI_DATE_TIMEZONE: 'Europe/Paris'
+
+mariadb:
+  enabled: true
+  auth:
+    database: ""
+    rootPassword: ""
+    username: ""
+    password: ""
+  primary:
+    persistence:
+      size: 5G
+      storageClass: ""

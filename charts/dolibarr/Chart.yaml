@@ -1,0 +1,14 @@
+---
+apiVersion: v2
+name: dolibarr
+description: Chart Helm for Dolibarr
+icon: https://www.dolibarr.org/medias/image/www.dolibarr.org/images/dolibarr_logo.svg
+type: application
+version: 0.0.1
+appVersion: 16.0.3
+
+dependencies:
+  - name: mariadb
+    version: "11.4.2"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: mariadb.enabled
