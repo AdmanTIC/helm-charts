@@ -24,9 +24,6 @@ spec:
   {{- with $.Values.service.clusterIP }}
   clusterIP: {{ . }}
   {{- end }}
-
-  externalTrafficPolicy: {{ default "Cluster" $.Values.service.externalTrafficPolicy }}
-
   ports:
     - name: dolibarr
       port: {{ $.Values.service.port }}
