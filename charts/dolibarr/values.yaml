@@ -3,6 +3,10 @@ global:
   commonAnnotations: {}
   imagePullSecrets: []
 
+auth:
+  adminUser: ""
+  adminPassword: ""
+
 persistence:
   enabled: false
   storageClass: ""
@@ -34,10 +38,12 @@ readinessProbe: {}
 resources: {}
 extraEnvVars:
   DOLI_DB_HOST: "{{ .Release.Name }}-mariadb.{{ .Release.Namespace }}.svc.cluster.local"
-  DOLI_DB_USER: "root"
-  DOLI_DB_PASSWORD: "{{ .Values.mariadb.auth.rootPassword }}"
+  DOLI_DB_USER: "{{ .Values.mariadb.auth.username }}"
+  DOLI_DB_PASSWORD: "{{ .Values.mariadb.auth.password }}"
   DOLI_DB_NAME: "{{ .Values.mariadb.auth.database }}"
   PHP_INI_DATE_TIMEZONE: "Europe/Paris"
+  DOLI_ADMIN_LOGIN: "{{ .Values.auth.adminUser }}"
+  DOLI_ADMIN_PASSWORD:  "{{ .Values.auth.adminPassword }}"
 
 ingress:
   enabled: false
