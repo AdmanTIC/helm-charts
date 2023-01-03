@@ -95,7 +95,7 @@ spec:
           {{- if $.Values.persistence.enabled }}
           volumeMounts:
             - name: data
-              mountPath: 
+              mountPath: /var/www/documents
           {{- end }}
 
       {{- if $.Values.persistence.enabled }}
