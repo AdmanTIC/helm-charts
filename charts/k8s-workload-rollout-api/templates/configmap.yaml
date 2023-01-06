@@ -9,6 +9,11 @@ data:
   index.php: |
     <?php
 
+    $kubectl_url = "https://storage.googleapis.com/kubernetes-release/release/v1.23.6/bin/linux/amd64/kubectl";
+    $kubectl_bin = "/run/apache2/kubectl";
+    $credentials_file = "/var/www/credentials.csv";
+    $kubectl_extra_args = isset($_ENV['KUBECTL_EXTRA_ARGS']) ? $_ENV['KUBECTL_EXTRA_ARGS'] : "";
+
     if (! file_exists($kubectl_bin)) {
       @file_put_contents($kubectl_bin, file_get_contents($kubectl_url));
       @system("chmod +x $kubectl_bin");
@@ -18,11 +23,6 @@ data:
       http_response_code(200);
       exit;
     }
-
-    $kubectl_url = "https://storage.googleapis.com/kubernetes-release/release/v1.23.6/bin/linux/amd64/kubectl";
-    $kubectl_bin = "/run/apache2/kubectl";
-    $credentials_file = "/var/www/credentials.csv";
-    $kubectl_extra_args = isset($_ENV['KUBECTL_EXTRA_ARGS']) ? $_ENV['KUBECTL_EXTRA_ARGS'] : "";
 
     $provided_secret = $_GET['shared_secret'];
 
