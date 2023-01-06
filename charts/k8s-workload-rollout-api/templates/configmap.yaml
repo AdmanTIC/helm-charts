@@ -1,0 +1,53 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "k8s-workload-rollout-api.fullname" . }}
+  labels:
+    {{- include "k8s-workload-rollout-api.labels" . | nindent 4 }}
+data:
+  index.php: |
+    <?php
+
+    $kubectl_url = "https://storage.googleapis.com/kubernetes-release/release/v1.23.6/bin/linux/amd64/kubectl";
+    $kubectl_bin = "/run/apache2/kubectl";
+    $credentials_file = "/var/www/credentials.csv";
+    $kubectl_extra_args = isset($_ENV['KUBECTL_EXTRA_ARGS']) ? $_ENV['KUBECTL_EXTRA_ARGS'] : "";
+
+    if (! isset($_GET['shared_secret']) || ! $_GET['shared_secret']) {
+      http_response_code(403);
+      exit;
+    }
+
+    $provided_secret = $_GET['shared_secret'];
+
+    if (! file_exists($kubectl_bin)) {
+      @file_put_contents($kubectl_bin, file_get_contents($kubectl_url));
+      @system("chmod +x $kubectl_bin");
+    }
+
+    $fh = fopen($credentials_file,"r");
+
+    while($row = fgets($fh)) {
+      $rc = null;
+      $output = null;
+      $secret_matched = false;
+
+      [$secret, $type, $namespace, $name] = explode(' ', $row);
+      if ($secret == $provided_secret) {
+        $secret_matched = true;
+        exec("$kubectl_bin $kubectl_extra_args rollout restart -n $namespace $type $name", $output, $rc);
+        if ($rc === 0) {
+          http_response_code(200);
+          exit;
+        } else {
+          http_response_code(500);
+          exit;
+        }
+      }
+    }
+
+    if ($secret_matched === false) {
+      http_response_code(403);
+      exit;
+    }
