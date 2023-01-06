@@ -1,0 +1,68 @@
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "short_name" . }}
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+spec:
+  serviceName: {{ include "short_name" . }}-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "short_name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+{{ include "chart_labels" . | indent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "short_name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+{{ include "chart_labels" . | indent 8 }}
+    spec:
+      initContainers:
+        - name: init-data
+          image: k8s.gcr.io/busybox
+          command:
+            - /bin/sh
+            - -c
+            - >
+              set -e -o pipefail ;
+              rm -rfv /var/lib/postgresql/data/lost+found ;
+
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+
+      containers:
+        - name: postgresql
+          image: zulip/zulip-postgresql:10
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: zulip
+            - name: POSTGRES_USER
+              value: zulip
+            - name: POSTGRES_PASSWORD
+              value: "{{ .Values.postgresql.password }}"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      volumeMode: Filesystem
+{{- if .Values.postgresql.persistence.storageClass }}
+{{- if (eq "-" .Values.postgresql.persistence.storageClass) }}
+      storageClassName: ""
+{{- else }}
+      storageClassName: "{{ .Values.postgresql.persistence.storageClass }}"
+{{- end }}
+{{- end }}
+      resources:
+        requests:
+          storage: {{ .Values.postgresql.persistence.size | quote }}

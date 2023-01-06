@@ -1,0 +1,2214 @@
+---
+zulip:
+  image: zulip/docker-zulip:4.8-0
+  auth_backend: EmailAuthBackend
+  external_hosts:
+    - zulip.example.com
+  administrator: admin@example.com
+  smtp:
+    host: smtp.example.com
+    port: 587
+    use_ssl: false
+    use_tls: true
+  persistence:
+    size: 5Gi
+  ingress:
+    annotations: {}
+  secret_key: CHANGEME
+  extra_configuration: |
+    SUBMIT_USAGE_STATISTICS = False
+    SESSION_EXPIRE_AT_BROWSER_CLOSE = True
+    SESSION_COOKIE_AGE = 60 * 60 * 24 * 2
+
+postgresql:
+  password: CHANGEME
+  persistence:
+    size: 2Gi
+
+
+# https://github.com/bitnami/charts/blob/master/bitnami/redis/values.yaml
+redis:
+  ## Global Docker image parameters
+  ## Please, note that this will override the image parameters, including dependencies, configured to use the global value
+  ## Current available global Docker image parameters: imageRegistry and imagePullSecrets
+  ##
+  global:
+    # imageRegistry: myRegistryName
+    # imagePullSecrets:
+    #   - myRegistryKeySecretName
+    # storageClass: myStorageClass
+    redis: {}
+
+  ## Bitnami Redis(TM) image version
+  ## ref: https://hub.docker.com/r/bitnami/redis/tags/
+  ##
+  image:
+    registry: docker.io
+    repository: bitnami/redis
+    ## Bitnami Redis(TM) image tag
+    ## ref: https://github.com/bitnami/bitnami-docker-redis#supported-tags-and-respective-dockerfile-links
+    ##
+    tag: 6.0.12-debian-10-r3
+    ## Specify a imagePullPolicy
+    ## Defaults to 'Always' if image tag is 'latest', else set to 'IfNotPresent'
+    ## ref: http://kubernetes.io/docs/user-guide/images/#pre-pulling-images
+    ##
+    pullPolicy: IfNotPresent
+    ## Optionally specify an array of imagePullSecrets.
+    ## Secrets must be manually created in the namespace.
+    ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+    ##
+    # pullSecrets:
+    #   - myRegistryKeySecretName
+
+  ## String to partially override redis.fullname template (will maintain the release name)
+  ##
+  # nameOverride:
+
+  ## String to fully override redis.fullname template
+  ##
+  # fullnameOverride:
+
+  ## Cluster settings
+  ##
+  cluster:
+    enabled: false
+    slaveCount: 2
+
+  ## Use redis sentinel in the redis pod. This will disable the master and slave services and
+  ## create one redis service with ports to the sentinel and the redis instances
+  ##
+  sentinel:
+    enabled: true
+    ## Require password authentication on the sentinel itself
+    ## ref: https://redis.io/topics/sentinel
+    ##
+    usePassword: true
+    ## Bitnami Redis(TM) Sentintel image version
+    ## ref: https://hub.docker.com/r/bitnami/redis-sentinel/tags/
+    ##
+    image:
+      registry: docker.io
+      repository: bitnami/redis-sentinel
+      ## Bitnami Redis(TM) image tag
+      ## ref: https://github.com/bitnami/bitnami-docker-redis-sentinel#supported-tags-and-respective-dockerfile-links
+      ##
+      tag: 6.0.12-debian-10-r0
+      ## Specify a imagePullPolicy
+      ## Defaults to 'Always' if image tag is 'latest', else set to 'IfNotPresent'
+      ## ref: http://kubernetes.io/docs/user-guide/images/#pre-pulling-images
+      ##
+      pullPolicy: IfNotPresent
+      ## Optionally specify an array of imagePullSecrets.
+      ## Secrets must be manually created in the namespace.
+      ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+      ##
+      # pullSecrets:
+      #   - myRegistryKeySecretName
+    masterSet: zulip
+    initialCheckTimeout: 5
+    quorum: 2
+    downAfterMilliseconds: 20000
+    failoverTimeout: 18000
+    parallelSyncs: 1
+    port: 26379
+
+    ## Delay seconds when cleaning nodes IPs
+    ## When starting it will clean the sentiles IP (RESET "*") in all the nodes
+    ## This is the delay time before sending the command to the next node
+    ##
+    cleanDelaySeconds: 5
+
+    ## Additional Redis(TM) configuration for the sentinel nodes
+    ## ref: https://redis.io/topics/config
+    ##
+    configmap:
+    ## Enable or disable static sentinel IDs for each replicas
+    ## If disabled each sentinel will generate a random id at startup
+    ## If enabled, each replicas will have a constant ID on each start-up
+    ##
+    staticID: false
+    ## Configure extra options for Redis(TM) Sentinel liveness and readiness probes
+    ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-probes/#configure-probes)
+    ##
+    livenessProbe:
+      enabled: true
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      timeoutSeconds: 5
+      successThreshold: 1
+      failureThreshold: 5
+    readinessProbe:
+      enabled: true
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      timeoutSeconds: 1
+      successThreshold: 1
+      failureThreshold: 5
+    customLivenessProbe: {}
+    customReadinessProbe: {}
+    ## Redis(TM) Sentinel resource requests and limits
+    ## ref: http://kubernetes.io/docs/user-guide/compute-resources/
+    # resources:
+    #   requests:
+    #     memory: 256Mi
+    #     cpu: 100m
+    ## Redis(TM) Sentinel Service properties
+    ##
+    service:
+      ##  Redis(TM) Sentinel Service type
+      ##
+      type: ClusterIP
+      sentinelPort: 26379
+      redisPort: 6379
+
+      ## External traffic policy (when service type is LoadBalancer)
+      ## ref: https://kubernetes.io/docs/tasks/access-application-cluster/create-external-load-balancer/#preserving-the-client-source-ip
+      ##
+      externalTrafficPolicy: Cluster
+
+      ## Specify the nodePort value for the LoadBalancer and NodePort service types.
+      ## ref: https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport
+      ##
+      # sentinelNodePort:
+      # redisNodePort:
+
+      ## Provide any additional annotations which may be required. This can be used to
+      ## set the LoadBalancer service type to internal only.
+      ## ref: https://kubernetes.io/docs/concepts/services-networking/service/#internal-load-balancer
+      ##
+      annotations: {}
+      labels: {}
+      loadBalancerIP:
+
+    ## Additional commands to run prior to starting Redis(TM) node with sentinel
+    ##
+    preExecCmds: ""
+
+    ## An array to add extra env var to the sentinel node configurations
+    ## For example:
+    ## extraEnvVars:
+    ##  - name: name
+    ##    value: value
+    ##  - name: other_name
+    ##    valueFrom:
+    ##      fieldRef:
+    ##        fieldPath: fieldPath
+    ##
+    extraEnvVars: []
+
+    ## ConfigMap with extra env vars:
+    ##
+    extraEnvVarsCM: []
+
+    ## Secret with extra env vars:
+    ##
+    extraEnvVarsSecret: []
+
+  ## Specifies the Kubernetes Cluster's Domain Name.
+  ##
+  clusterDomain: cluster.local
+
+  networkPolicy:
+    ## Specifies whether a NetworkPolicy should be created
+    ##
+    enabled: false
+
+    ## The Policy model to apply. When set to false, only pods with the correct
+    ## client label will have network access to the port Redis(TM) is listening
+    ## on. When true, Redis(TM) will accept connections from any source
+    ## (with the correct destination port).
+    ##
+    # allowExternal: true
+
+    ## Allow connections from other namespaces. Just set label for namespace and set label for pods (optional).
+    ##
+    ingressNSMatchLabels: {}
+    ingressNSPodMatchLabels: {}
+
+  serviceAccount:
+    ## Specifies whether a ServiceAccount should be created
+    ##
+    create: false
+    ## The name of the ServiceAccount to use.
+    ## If not set and create is true, a name is generated using the fullname template
+    ##
+    name:
+    ## Add annotations to service account
+    # annotations:
+    #   iam.gke.io/gcp-service-account: "sa@project.iam.gserviceaccount.com"
+
+  rbac:
+    ## Specifies whether RBAC resources should be created
+    ##
+    create: false
+
+    role:
+      ## Rules to create. It follows the role specification
+      # rules:
+      #  - apiGroups:
+      #    - extensions
+      #    resources:
+      #      - podsecuritypolicies
+      #    verbs:
+      #      - use
+      #    resourceNames:
+      #      - gce.unprivileged
+      rules: []
+
+  ## Redis(TM) pod Security Context
+  ##
+  securityContext:
+    enabled: true
+    fsGroup: 1001
+    ## sysctl settings for master and slave pods
+    ##
+    ## Uncomment the setting below to increase the net.core.somaxconn value
+    ##
+    # sysctls:
+    # - name: net.core.somaxconn
+    #   value: "10000"
+
+  ## Container Security Context
+  ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+  ##
+  containerSecurityContext:
+    enabled: true
+    runAsUser: 1001
+
+  ## Use password authentication
+  ##
+  usePassword: true
+  ## Redis(TM) password (both master and slave)
+  ## Defaults to a random 10-character alphanumeric string if not set and usePassword is true
+  ## ref: https://github.com/bitnami/bitnami-docker-redis#setting-the-server-password-on-first-run
+  ##
+  password: CHANGEME
+  ## Use existing secret (ignores previous password)
+  # existingSecret:
+  ## Password key to be retrieved from Redis(TM) secret
+  ##
+  # existingSecretPasswordKey:
+
+  ## Mount secrets as files instead of environment variables
+  ##
+  usePasswordFile: false
+
+  ## Persist data to a persistent volume (Redis(TM) Master)
+  ##
+  persistence:
+    ## A manually managed Persistent Volume and Claim
+    ## Requires persistence.enabled: true
+    ## If defined, PVC must be created manually before volume will be bound
+    ##
+    existingClaim:
+
+  # Redis(TM) port
+  redisPort: 6379
+
+  ##
+  ## TLS configuration
+  ##
+  tls:
+    # Enable TLS traffic
+    enabled: false
+    #
+    # Whether to require clients to authenticate or not.
+    authClients: true
+    #
+    # Name of the Secret that contains the certificates
+    certificatesSecret:
+    #
+    # Certificate filename
+    certFilename:
+    #
+    # Certificate Key filename
+    certKeyFilename:
+    #
+    # CA Certificate filename
+    certCAFilename:
+    #
+    # File containing DH params (in order to support DH based ciphers)
+    # dhParamsFilename:
+
+  ##
+  ## Redis(TM) Master parameters
+  ##
+  master:
+    ## Redis(TM) command arguments
+    ##
+    ## Can be used to specify command line arguments, for example:
+    ## Note `exec` is prepended to command
+    ##
+    command: "/run.sh"
+    ## Additional commands to run prior to starting Redis(TM)
+    ##
+    preExecCmds: ""
+    ## Additional Redis(TM) configuration for the master nodes
+    ## ref: https://redis.io/topics/config
+    ##
+    configmap:
+    ## Deployment pod host aliases
+    ## https://kubernetes.io/docs/concepts/services-networking/add-entries-to-pod-etc-hosts-with-host-aliases/
+    ##
+    hostAliases: []
+    ## Redis(TM) additional command line flags
+    ##
+    ## Can be used to specify command line flags, for example:
+    ## extraFlags:
+    ##  - "--maxmemory-policy volatile-ttl"
+    ##  - "--repl-backlog-size 1024mb"
+    ##
+    extraFlags: []
+    ## Comma-separated list of Redis(TM) commands to disable
+    ##
+    ## Can be used to disable Redis(TM) commands for security reasons.
+    ## Commands will be completely disabled by renaming each to an empty string.
+    ## ref: https://redis.io/topics/security#disabling-of-specific-commands
+    ##
+    disableCommands:
+      - FLUSHDB
+      - FLUSHALL
+
+    ## Redis(TM) Master additional pod labels and annotations
+    ## ref: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
+    ##
+    podLabels: {}
+    podAnnotations: {}
+
+    ## Redis(TM) Master resource requests and limits
+    ## ref: http://kubernetes.io/docs/user-guide/compute-resources/
+    # resources:
+    #   requests:
+    #     memory: 256Mi
+    #     cpu: 100m
+    ## Use an alternate scheduler, e.g. "stork".
+    ## ref: https://kubernetes.io/docs/tasks/administer-cluster/configure-multiple-schedulers/
+    ##
+    # schedulerName:
+
+    # Enable shared process namespace in a pod.
+    # If set to false (default), each container will run in separate namespace, redis will have PID=1.
+    # If set to true, the /pause will run as init process and will reap any zombie PIDs,
+    # for example, generated by a custom exec probe running longer than a probe timeoutSeconds.
+    # Enable this only if customLivenessProbe or customReadinessProbe is used and zombie PIDs are accumulating.
+    # Ref: https://kubernetes.io/docs/tasks/configure-pod-container/share-process-namespace/
+    shareProcessNamespace: false
+    ## Configure extra options for Redis(TM) Master liveness and readiness probes
+    ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-probes/#configure-probes)
+    ##
+    livenessProbe:
+      enabled: true
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      timeoutSeconds: 5
+      successThreshold: 1
+      failureThreshold: 5
+    readinessProbe:
+      enabled: true
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      timeoutSeconds: 1
+      successThreshold: 1
+      failureThreshold: 5
+
+    ## Configure custom probes for images other images like
+    ## rhscl/redis-32-rhel7 rhscl/redis-5-rhel7
+    ## Only used if readinessProbe.enabled: false / livenessProbe.enabled: false
+    ##
+    # customLivenessProbe:
+    #  tcpSocket:
+    #    port: 6379
+    #  initialDelaySeconds: 10
+    #  periodSeconds: 5
+    # customReadinessProbe:
+    #  initialDelaySeconds: 30
+    #  periodSeconds: 10
+    #  timeoutSeconds: 5
+    #  exec:
+    #    command:
+    #    - "container-entrypoint"
+    #    - "bash"
+    #    - "-c"
+    #    - "redis-cli set liveness-probe \"`date`\" | grep OK"
+    customLivenessProbe: {}
+    customReadinessProbe: {}
+
+    ## Redis(TM) Master Node selectors and tolerations for pod assignment
+    ## ref: https://kubernetes.io/docs/concepts/configuration/assign-pod-node/#nodeselector
+    ## ref: https://kubernetes.io/docs/concepts/configuration/assign-pod-node/#taints-and-tolerations-beta-feature
+    ##
+    # nodeSelector: {"beta.kubernetes.io/arch": "amd64"}
+    # tolerations: []
+    ## Redis(TM) Master pod/node affinity/anti-affinity
+    ##
+    affinity: {}
+
+    ## Redis(TM) Master Service properties
+    ##
+    service:
+      ##  Redis(TM) Master Service type
+      ##
+      type: ClusterIP
+      port: 6379
+
+      ## External traffic policy (when service type is LoadBalancer)
+      ## ref: https://kubernetes.io/docs/tasks/access-application-cluster/create-external-load-balancer/#preserving-the-client-source-ip
+      ##
+      externalTrafficPolicy: Cluster
+
+      ## Specify the nodePort value for the LoadBalancer and NodePort service types.
+      ## ref: https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport
+      ##
+      # nodePort:
+
+      ## Provide any additional annotations which may be required. This can be used to
+      ## set the LoadBalancer service type to internal only.
+      ## ref: https://kubernetes.io/docs/concepts/services-networking/service/#internal-load-balancer
+      ##
+      annotations: {}
+      labels: {}
+      loadBalancerIP:
+      # loadBalancerSourceRanges: ["10.0.0.0/8"]
+
+    ## Enable persistence using Persistent Volume Claims
+    ## ref: http://kubernetes.io/docs/user-guide/persistent-volumes/
+    ##
+    persistence:
+      enabled: true
+      ## The path the volume will be mounted at, useful when using different
+      ## Redis(TM) images.
+      ##
+      path: /data
+      ## The subdirectory of the volume to mount to, useful in dev environments
+      ## and one PV for multiple services.
+      ##
+      subPath: ""
+      ## redis data Persistent Volume Storage Class
+      ## If defined, storageClassName: <storageClass>
+      ## If set to "-", storageClassName: "", which disables dynamic provisioning
+      ## If undefined (the default) or set to null, no storageClassName spec is
+      ##   set, choosing the default provisioner.  (gp2 on AWS, standard on
+      ##   GKE, AWS & OpenStack)
+      ##
+      # storageClass: "-"
+      accessModes:
+        - ReadWriteOnce
+      size: 8Gi
+      ## Persistent Volume selectors
+      ## https://kubernetes.io/docs/concepts/storage/persistent-volumes/#selector
+      ##
+      matchLabels: {}
+      matchExpressions: {}
+      volumes:
+      #  - name: volume_name
+      #    emptyDir: {}
+
+    ## Update strategy, can be set to RollingUpdate or onDelete by default.
+    ## https://kubernetes.io/docs/tutorials/stateful-application/basic-stateful-set/#updating-statefulsets
+    ##
+    statefulset:
+      labels: {}
+      annotations: {}
+      updateStrategy: RollingUpdate
+      ## Partition update strategy
+      ## https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#partitions
+      # rollingUpdatePartition:
+      volumeClaimTemplates:
+        labels: {}
+        annotations: {}
+
+    ## Redis(TM) Master pod priorityClassName
+    ##
+    priorityClassName: {}
+
+    ## An array to add extra env vars
+    ## For example:
+    ## extraEnvVars:
+    ##  - name: name
+    ##    value: value
+    ##  - name: other_name
+    ##    valueFrom:
+    ##      fieldRef:
+    ##        fieldPath: fieldPath
+    ##
+    extraEnvVars: []
+
+    ## ConfigMap with extra env vars:
+    ##
+    extraEnvVarsCM: []
+
+    ## Secret with extra env vars:
+    ##
+    extraEnvVarsSecret: []
+
+  ##
+  ## Redis(TM) Slave properties
+  ## Note: service.type is a mandatory parameter
+  ## The rest of the parameters are either optional or, if undefined, will inherit those declared in Redis(TM) Master
+  ##
+  slave:
+    ## Slave Service properties
+    ##
+    service:
+      ## Redis(TM) Slave Service type
+      ##
+      type: ClusterIP
+      ## Redis(TM) port
+      ##
+      port: 6379
+
+      ## External traffic policy (when service type is LoadBalancer)
+      ## ref: https://kubernetes.io/docs/tasks/access-application-cluster/create-external-load-balancer/#preserving-the-client-source-ip
+      ##
+      externalTrafficPolicy: Cluster
+
+      ## Specify the nodePort value for the LoadBalancer and NodePort service types.
+      ## ref: https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport
+      ##
+      # nodePort:
+
+      ## Provide any additional annotations which may be required. This can be used to
+      ## set the LoadBalancer service type to internal only.
+      ## ref: https://kubernetes.io/docs/concepts/services-networking/service/#internal-load-balancer
+      ##
+      annotations: {}
+      labels: {}
+      loadBalancerIP:
+      # loadBalancerSourceRanges: ["10.0.0.0/8"]
+
+    ## Redis(TM) slave port
+    ##
+    port: 6379
+    ## Deployment pod host aliases
+    ## https://kubernetes.io/docs/concepts/services-networking/add-entries-to-pod-etc-hosts-with-host-aliases/
+    ##
+    hostAliases: []
+    ## Can be used to specify command line arguments, for example:
+    ## Note `exec` is prepended to command
+    ##
+    command: "/run.sh"
+    ## Additional commands to run prior to starting Redis(TM)
+    ##
+    preExecCmds: ""
+    ## Additional Redis(TM) configuration for the slave nodes
+    ## ref: https://redis.io/topics/config
+    ##
+    configmap:
+    ## Redis(TM) extra flags
+    ##
+    extraFlags: []
+    ## List of Redis(TM) commands to disable
+    ##
+    disableCommands:
+      - FLUSHDB
+      - FLUSHALL
+
+    ## Redis(TM) Slave pod/node affinity/anti-affinity
+    ##
+    affinity: {}
+
+    ## Kubernetes Spread Constraints for pod assignment
+    ## ref: https://kubernetes.io/docs/concepts/workloads/pods/pod-topology-spread-constraints/
+    ##
+    # - maxSkew: 1
+    #   topologyKey: node
+    #   whenUnsatisfiable: DoNotSchedule
+    spreadConstraints: {}
+
+    # Enable shared process namespace in a pod.
+    # If set to false (default), each container will run in separate namespace, redis will have PID=1.
+    # If set to true, the /pause will run as init process and will reap any zombie PIDs,
+    # for example, generated by a custom exec probe running longer than a probe timeoutSeconds.
+    # Enable this only if customLivenessProbe or customReadinessProbe is used and zombie PIDs are accumulating.
+    # Ref: https://kubernetes.io/docs/tasks/configure-pod-container/share-process-namespace/
+    shareProcessNamespace: false
+    ## Configure extra options for Redis(TM) Slave liveness and readiness probes
+    ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-probes/#configure-probes)
+    ##
+    livenessProbe:
+      enabled: true
+      initialDelaySeconds: 30
+      periodSeconds: 10
+      timeoutSeconds: 5
+      successThreshold: 1
+      failureThreshold: 5
+    readinessProbe:
+      enabled: true
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 10
+      successThreshold: 1
+      failureThreshold: 5
+
+    ## Configure custom probes for images other images like
+    ## rhscl/redis-32-rhel7 rhscl/redis-5-rhel7
+    ## Only used if readinessProbe.enabled: false / livenessProbe.enabled: false
+    ##
+    # customLivenessProbe:
+    #  tcpSocket:
+    #    port: 6379
+    #  initialDelaySeconds: 10
+    #  periodSeconds: 5
+    # customReadinessProbe:
+    #  initialDelaySeconds: 30
+    #  periodSeconds: 10
+    #  timeoutSeconds: 5
+    #  exec:
+    #    command:
+    #    - "container-entrypoint"
+    #    - "bash"
+    #    - "-c"
+    #    - "redis-cli set liveness-probe \"`date`\" | grep OK"
+    customLivenessProbe: {}
+    customReadinessProbe: {}
+
+    ## Redis(TM) slave Resource
+    # resources:
+    #   requests:
+    #     memory: 256Mi
+    #     cpu: 100m
+
+    ## Redis(TM) slave selectors and tolerations for pod assignment
+    # nodeSelector: {"beta.kubernetes.io/arch": "amd64"}
+    # tolerations: []
+
+    ## Use an alternate scheduler, e.g. "stork".
+    ## ref: https://kubernetes.io/docs/tasks/administer-cluster/configure-multiple-schedulers/
+    ##
+    # schedulerName:
+
+    ## Redis(TM) slave pod Annotation and Labels
+    ##
+    podLabels: {}
+    podAnnotations: {}
+
+    ## Redis(TM) slave pod priorityClassName
+    priorityClassName: {}
+
+    ## Enable persistence using Persistent Volume Claims
+    ## ref: http://kubernetes.io/docs/user-guide/persistent-volumes/
+    ##
+    persistence:
+      enabled: true
+      ## The path the volume will be mounted at, useful when using different
+      ## Redis(TM) images.
+      ##
+      path: /data
+      ## The subdirectory of the volume to mount to, useful in dev environments
+      ## and one PV for multiple services.
+      ##
+      subPath: ""
+      ## redis data Persistent Volume Storage Class
+      ## If defined, storageClassName: <storageClass>
+      ## If set to "-", storageClassName: "", which disables dynamic provisioning
+      ## If undefined (the default) or set to null, no storageClassName spec is
+      ##   set, choosing the default provisioner.  (gp2 on AWS, standard on
+      ##   GKE, AWS & OpenStack)
+      ##
+      # storageClass: "-"
+      accessModes:
+        - ReadWriteOnce
+      size: 8Gi
+      ## Persistent Volume selectors
+      ## https://kubernetes.io/docs/concepts/storage/persistent-volumes/#selector
+      ##
+      matchLabels: {}
+      matchExpressions: {}
+
+    ## Update strategy, can be set to RollingUpdate or onDelete by default.
+    ## https://kubernetes.io/docs/tutorials/stateful-application/basic-stateful-set/#updating-statefulsets
+    ##
+    statefulset:
+      labels: {}
+      annotations: {}
+      updateStrategy: RollingUpdate
+      ## Partition update strategy
+      ## https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#partitions
+      # rollingUpdatePartition:
+      volumeClaimTemplates:
+        labels: {}
+        annotations: {}
+
+    ## An array to add extra env vars
+    ## For example:
+    ## extraEnvVars:
+    ##  - name: name
+    ##    value: value
+    ##  - name: other_name
+    ##    valueFrom:
+    ##      fieldRef:
+    ##        fieldPath: fieldPath
+    ##
+    extraEnvVars: []
+
+    ## ConfigMap with extra env vars:
+    ##
+    extraEnvVarsCM: []
+
+    ## Secret with extra env vars:
+    ##
+    extraEnvVarsSecret: []
+
+  ## Prometheus Exporter / Metrics
+  ##
+  metrics:
+    enabled: false
+
+    image:
+      registry: docker.io
+      repository: bitnami/redis-exporter
+      tag: 1.17.1-debian-10-r12
+      pullPolicy: IfNotPresent
+      ## Optionally specify an array of imagePullSecrets.
+      ## Secrets must be manually created in the namespace.
+      ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+      ##
+      # pullSecrets:
+      #   - myRegistryKeySecretName
+
+    ## Metrics exporter resource requests and limits
+    ## ref: http://kubernetes.io/docs/user-guide/compute-resources/
+    ##
+    # resources: {}
+
+    ## Extra arguments for Metrics exporter, for example:
+    ## extraArgs:
+    ##   check-keys: myKey,myOtherKey
+    # extraArgs: {}
+
+    ## Metrics exporter pod Annotation and Labels
+    ##
+    podAnnotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "9121"
+    # podLabels: {}
+
+    # Enable this if you're using https://github.com/coreos/prometheus-operator
+    serviceMonitor:
+      enabled: false
+      ## Specify a namespace if needed
+      # namespace: monitoring
+      # fallback to the prometheus default unless specified
+      # interval: 10s
+      ## Defaults to what's used if you follow CoreOS [Prometheus Install Instructions](https://github.com/bitnami/charts/tree/master/bitnami/prometheus-operator#tldr)
+      ## [Prometheus Selector Label](https://github.com/bitnami/charts/tree/master/bitnami/prometheus-operator#prometheus-operator-1)
+      ## [Kube Prometheus Selector Label](https://github.com/bitnami/charts/tree/master/bitnami/prometheus-operator#exporters)
+      ##
+      selector:
+        prometheus: kube-prometheus
+
+      ## RelabelConfigs to apply to samples before scraping
+      ## ref: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#relabelconfig
+      ## Value is evalued as a template
+      ##
+      relabelings: []
+
+      ## MetricRelabelConfigs to apply to samples before ingestion
+      ## ref: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#relabelconfig
+      ## Value is evalued as a template
+      ##
+      metricRelabelings: []
+      #  - sourceLabels:
+      #      - "__name__"
+      #    targetLabel: "__name__"
+      #    action: replace
+      #    regex: '(.*)'
+      #    replacement: 'example_prefix_$1'
+
+    ## Custom PrometheusRule to be defined
+    ## The value is evaluated as a template, so, for example, the value can depend on .Release or .Chart
+    ## ref: https://github.com/coreos/prometheus-operator#customresourcedefinitions
+    ##
+    prometheusRule:
+      enabled: false
+      additionalLabels: {}
+      namespace: ""
+      ## Redis(TM) prometheus rules
+      ## These are just examples rules, please adapt them to your needs.
+      ## Make sure to constraint the rules to the current redis service.
+      # rules:
+      #   - alert: RedisDown
+      #     expr: redis_up{service="{{ template "redis.fullname" . }}-metrics"} == 0
+      #     for: 2m
+      #     labels:
+      #       severity: error
+      #     annotations:
+      #       summary: Redis(TM) instance {{ "{{ $labels.instance }}" }} down
+      #       description: Redis(TM) instance {{ "{{ $labels.instance }}" }} is down
+      #    - alert: RedisMemoryHigh
+      #      expr: >
+      #        redis_memory_used_bytes{service="{{ template "redis.fullname" . }}-metrics"} * 100
+      #        /
+      #        redis_memory_max_bytes{service="{{ template "redis.fullname" . }}-metrics"}
+      #        > 90
+      #      for: 2m
+      #      labels:
+      #        severity: error
+      #      annotations:
+      #        summary: Redis(TM) instance {{ "{{ $labels.instance }}" }} is using too much memory
+      #        description: |
+      #          Redis(TM) instance {{ "{{ $labels.instance }}" }} is using {{ "{{ $value }}" }}% of its available memory.
+      #    - alert: RedisKeyEviction
+      #      expr: |
+      #        increase(redis_evicted_keys_total{service="{{ template "redis.fullname" . }}-metrics"}[5m]) > 0
+      #      for: 1s
+      #      labels:
+      #        severity: error
+      #      annotations:
+      #        summary: Redis(TM) instance {{ "{{ $labels.instance }}" }} has evicted keys
+      #        description: |
+      #          Redis(TM) instance {{ "{{ $labels.instance }}" }} has evicted {{ "{{ $value }}" }} keys in the last 5 minutes.
+      rules: []
+
+    ## Metrics exporter pod priorityClassName
+    priorityClassName: {}
+    service:
+      type: ClusterIP
+
+      ## External traffic policy (when service type is LoadBalancer)
+      ## ref: https://kubernetes.io/docs/tasks/access-application-cluster/create-external-load-balancer/#preserving-the-client-source-ip
+      ##
+      externalTrafficPolicy: Cluster
+
+      ## Use serviceLoadBalancerIP to request a specific static IP,
+      ## otherwise leave blank
+      # loadBalancerIP:
+      annotations: {}
+      labels: {}
+
+  ##
+  ## Init containers parameters:
+  ## volumePermissions: Change the owner of the persist volume mountpoint to RunAsUser:fsGroup
+  ##
+  volumePermissions:
+    enabled: false
+    image:
+      registry: docker.io
+      repository: bitnami/bitnami-shell
+      tag: "10"
+      pullPolicy: Always
+      ## Optionally specify an array of imagePullSecrets.
+      ## Secrets must be manually created in the namespace.
+      ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+      ##
+      # pullSecrets:
+      #   - myRegistryKeySecretName
+    resources: {}
+    # resources:
+    #   requests:
+    #     memory: 128Mi
+    #     cpu: 100m
+
+    ## Init container Security Context
+    ## Note: the chown of the data folder is done to containerSecurityContext.runAsUser
+    ## and not the below volumePermissions.securityContext.runAsUser
+    ## When runAsUser is set to special value "auto", init container will try to chwon the
+    ## data folder to autodetermined user&group, using commands: `id -u`:`id -G | cut -d" " -f2`
+    ## "auto" is especially useful for OpenShift which has scc with dynamic userids (and 0 is not allowed).
+    ## You may want to use this volumePermissions.securityContext.runAsUser="auto" in combination with
+    ## podSecurityContext.enabled=false,containerSecurityContext.enabled=false
+    ##
+    securityContext:
+      runAsUser: 0
+
+  ## Redis(TM) config file
+  ## ref: https://redis.io/topics/config
+  ##
+  configmap: |-
+    # Enable AOF https://redis.io/topics/persistence#append-only-file
+    appendonly yes
+    # Disable RDB persistence, AOF persistence already enabled.
+    save ""
+  ## Sysctl InitContainer
+  ## used to perform sysctl operation to modify Kernel settings (needed sometimes to avoid warnings)
+  ##
+  sysctlImage:
+    enabled: false
+    command: []
+    registry: docker.io
+    repository: bitnami/bitnami-shell
+    tag: "10"
+    pullPolicy: Always
+    ## Optionally specify an array of imagePullSecrets.
+    ## Secrets must be manually created in the namespace.
+    ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+    ##
+    # pullSecrets:
+    #   - myRegistryKeySecretName
+    mountHostSys: false
+    resources: {}
+    # resources:
+    #   requests:
+    #     memory: 128Mi
+    #     cpu: 100m
+
+  ## PodSecurityPolicy configuration
+  ## ref: https://kubernetes.io/docs/concepts/policy/pod-security-policy/
+  ##
+  podSecurityPolicy:
+    ## Specifies whether a PodSecurityPolicy should be created
+    ##
+    create: false
+
+  ## Define a disruption budget
+  ## ref: https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
+  ##
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+    # maxUnavailable: 1
+
+# https://github.com/bitnami/charts/blob/master/bitnami/rabbitmq/values.yaml
+rabbitmq:
+  ## Global Docker image parameters
+  ## Please, note that this will override the image parameters, including dependencies, configured to use the global value
+  ## Current available global Docker image parameters: imageRegistry and imagePullSecrets
+  ##
+  # global:
+  #   imageRegistry: myRegistryName
+  #   imagePullSecrets:
+  #     - myRegistryKeySecretName
+  #   storageClass: myStorageClass
+
+  ## Bitnami RabbitMQ image version
+  ## ref: https://hub.docker.com/r/bitnami/rabbitmq/tags/
+  ##
+  image:
+    registry: docker.io
+    repository: bitnami/rabbitmq
+    tag: 3.8.14-debian-10-r0
+
+    ## set to true if you would like to see extra information on logs
+    ## It turns BASH and/or NAMI debugging in the image
+    ##
+    debug: false
+
+    ## Specify a imagePullPolicy
+    ## Defaults to 'Always' if image tag is 'latest', else set to 'IfNotPresent'
+    ## ref: http://kubernetes.io/docs/user-guide/images/#pre-pulling-images
+    ##
+    pullPolicy: IfNotPresent
+    ## Optionally specify an array of imagePullSecrets.
+    ## Secrets must be manually created in the namespace.
+    ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+    ##
+    # pullSecrets:
+    #   - myRegistryKeySecretName
+
+  ## String to partially override rabbitmq.fullname template (will maintain the release name)
+  ##
+  # nameOverride:
+
+  ## String to fully override rabbitmq.fullname template
+  ##
+  # fullnameOverride:
+
+  ## Force target Kubernetes version (using Helm capabilites if not set)
+  ##
+  kubeVersion:
+
+  ## Kubernetes Cluster Domain
+  ##
+  clusterDomain: cluster.local
+
+  ## Deployment pod host aliases
+  ## https://kubernetes.io/docs/concepts/services-networking/add-entries-to-pod-etc-hosts-with-host-aliases/
+  ##
+  hostAliases: []
+
+  ## RabbitMQ Authentication parameters
+  ##
+  auth:
+    ## RabbitMQ application username
+    ## ref: https://github.com/bitnami/bitnami-docker-rabbitmq#environment-variables
+    ##
+    username: zulip
+
+    ## RabbitMQ application password
+    ## ref: https://github.com/bitnami/bitnami-docker-rabbitmq#environment-variables
+    ##
+    password: CHANGEME
+    # existingPasswordSecret: name-of-existing-secret
+
+    ## Erlang cookie to determine whether different nodes are allowed to communicate with each other
+    ## ref: https://github.com/bitnami/bitnami-docker-rabbitmq#environment-variables
+    ##
+    erlangCookie: CHANGEME
+    # existingErlangSecret: name-of-existing-secret
+
+    ## Enable encryption to rabbitmq
+    ## ref: https://www.rabbitmq.com/ssl.html
+    ##
+    tls:
+      enabled: false
+      failIfNoPeerCert: true
+      sslOptionsVerify: verify_peer
+      caCertificate: |-
+      serverCertificate: |-
+      serverKey: |-
+      # existingSecret: name-of-existing-secret-to-rabbitmq
+      existingSecretFullChain: false
+
+  ## Value for the RABBITMQ_LOGS environment variable
+  ## ref: https://www.rabbitmq.com/logging.html#log-file-location
+  ##
+  logs: '-'
+
+  ## RabbitMQ Max File Descriptors
+  ## ref: https://github.com/bitnami/bitnami-docker-rabbitmq#environment-variables
+  ## ref: https://www.rabbitmq.com/install-debian.html#kernel-resource-limits
+  ##
+  ulimitNofiles: '65536'
+
+  ## RabbitMQ maximum available scheduler threads and online scheduler threads. By default it will create a thread per CPU detected, with the following parameters you can tune it manually.
+  ## ref: https://hamidreza-s.github.io/erlang/scheduling/real-time/preemptive/migration/2016/02/09/erlang-scheduler-details.html#scheduler-threads
+  ## ref: https://github.com/bitnami/charts/issues/2189
+  ##
+  # maxAvailableSchedulers: 2
+  # onlineSchedulers: 1
+
+  ## The memory threshold under which RabbitMQ will stop reading from client network sockets, in order to avoid being killed by the OS
+  ## ref: https://www.rabbitmq.com/alarms.html
+  ## ref: https://www.rabbitmq.com/memory.html#threshold
+  ##
+  memoryHighWatermark:
+    enabled: false
+    ## Memory high watermark type. Either absolute or relative
+    ##
+    type: 'relative'
+    ## Memory high watermark value.
+    ## The default value of 0.4 stands for 40% of available RAM
+    ## Note: the memory relative limit is applied to the resource.limits.memory to calculate the memory threshold
+    ## You can also use an absolute value, e.g.: 256MB
+    ##
+    value: 0.4
+
+  ## Plugins to enable
+  ##
+  plugins: 'rabbitmq_management rabbitmq_peer_discovery_k8s'
+
+  ## Community plugins to download during container initialization.
+  ## Combine it with extraPlugins to also enable them.
+  ##
+  # communityPlugins:
+
+  ## Extra plugins to enable
+  ## Use this instead of `plugins` to add new plugins
+  ##
+  extraPlugins: 'rabbitmq_auth_backend_ldap'
+
+  ## Clustering settings
+  ##
+  clustering:
+    addressType: hostname
+    ## Rebalance master for queues in cluster when new replica is created
+    ## ref: https://www.rabbitmq.com/rabbitmq-queues.8.html#rebalance
+    ##
+    rebalance: false
+
+    ## forceBoot: executes 'rabbitmqctl force_boot' to force boot cluster shut down unexpectedly in an
+    ## unknown order.
+    ## ref: https://www.rabbitmq.com/rabbitmqctl.8.html#force_boot
+    ##
+    forceBoot: false
+
+  ## Loading a RabbitMQ definitions file to configure RabbitMQ
+  ##
+  loadDefinition:
+    enabled: false
+    ## Can be templated if needed, e.g.
+    ## existingSecret: "{{ .Release.Name }}-load-definition"
+    ##
+    # existingSecret:
+
+  ## Command and args for running the container (set to default if not set). Use array form
+  ##
+  # command:
+  # args:
+
+  ## Default duration in seconds k8s waits for container to exit before sending kill signal. Any time in excess of
+  ## 10 seconds will be spent waiting for any synchronization necessary for cluster not to lose data.
+  ##
+  terminationGracePeriodSeconds: 120
+
+  ## Additional environment variables to set
+  ## E.g:
+  ## extraEnvVars:
+  ##   - name: FOO
+  ##     value: BAR
+  ##
+  extraEnvVars: []
+
+  ## ConfigMap with extra environment variables
+  ##
+  # extraEnvVarsCM:
+
+  ## Secret with extra environment variables
+  ##
+  # extraEnvVarsSecret:
+
+  ## Extra ports to be included in container spec, primarily informational
+  ## E.g:
+  ## extraContainerPorts:
+  ## - name: new_port_name
+  ##   containerPort: 1234
+  ##
+  extraContainerPorts: []
+
+  ## Configuration file content: required cluster configuration
+  ## Do not override unless you know what you are doing.
+  ## To add more configuration, use `extraConfiguration` of `advancedConfiguration` instead
+  ##
+  configuration: |-
+    ## Username and password
+    ##
+    default_user = {{ .Values.auth.username }}
+    default_pass = CHANGEME
+    ## Clustering
+    ##
+    cluster_formation.peer_discovery_backend  = rabbit_peer_discovery_k8s
+    cluster_formation.k8s.host = kubernetes.default.svc.{{ .Values.clusterDomain }}
+    cluster_formation.node_cleanup.interval = 10
+    cluster_formation.node_cleanup.only_log_warning = true
+    cluster_partition_handling = autoheal
+    # queue master locator
+    queue_master_locator = min-masters
+    # enable guest user
+    loopback_users.guest = false
+    {{ tpl .Values.extraConfiguration . }}
+    {{- if .Values.auth.tls.enabled }}
+    ssl_options.verify = {{ .Values.auth.tls.sslOptionsVerify }}
+    listeners.ssl.default = {{ .Values.service.tlsPort }}
+    ssl_options.fail_if_no_peer_cert = {{ .Values.auth.tls.failIfNoPeerCert }}
+    ssl_options.cacertfile = /opt/bitnami/rabbitmq/certs/ca_certificate.pem
+    ssl_options.certfile = /opt/bitnami/rabbitmq/certs/server_certificate.pem
+    ssl_options.keyfile = /opt/bitnami/rabbitmq/certs/server_key.pem
+    {{- end }}
+    {{- if .Values.ldap.enabled }}
+    auth_backends.1 = rabbit_auth_backend_ldap
+    auth_backends.2 = internal
+    {{- range $index, $server := .Values.ldap.servers }}
+    auth_ldap.servers.{{ add $index 1 }} = {{ $server }}
+    {{- end }}
+    auth_ldap.port = {{ .Values.ldap.port }}
+    auth_ldap.user_dn_pattern = {{ .Values.ldap.user_dn_pattern  }}
+    {{- if .Values.ldap.tls.enabled }}
+    auth_ldap.use_ssl = true
+    {{- end }}
+    {{- end }}
+    {{- if .Values.metrics.enabled }}
+    ## Prometheus metrics
+    ##
+    prometheus.tcp.port = 9419
+    {{- end }}
+    {{- if .Values.memoryHighWatermark.enabled }}
+    ## Memory Threshold
+    ##
+    total_memory_available_override_value = {{ include "rabbitmq.toBytes" .Values.resources.limits.memory }}
+    vm_memory_high_watermark.{{ .Values.memoryHighWatermark.type }} = {{ .Values.memoryHighWatermark.value }}
+    {{- end }}
+  ## Configuration file content: extra configuration
+  ## Use this instead of `configuration` to add more configuration
+  ##
+  extraConfiguration: |-
+    #default_vhost = {{ .Release.Namespace }}-vhost
+    #disk_free_limit.absolute = 50MB
+    #load_definitions = /app/load_definition.json
+  ## Configuration file content: advanced configuration
+  ## Use this as additional configuration in classic config format (Erlang term configuration format)
+  ##
+  ## If you set LDAP with TLS/SSL enabled and you are using self-signed certificates, uncomment these lines.
+  ## advancedConfiguration: |-
+  ##   [{
+  ##     rabbitmq_auth_backend_ldap,
+  ##     [{
+  ##         ssl_options,
+  ##         [{
+  ##             verify, verify_none
+  ##         }, {
+  ##             fail_if_no_peer_cert,
+  ##             false
+  ##         }]
+  ##     ]}
+  ##   }].
+  ##
+  advancedConfiguration: |-
+  ## LDAP configuration
+  ##
+  ldap:
+    enabled: false
+    ## List of LDAP servers hostnames
+    ##
+    servers: []
+    ## LDAP servers port
+    ##
+    port: '389'
+    ## Pattern used to translate the provided username into a value to be used for the LDAP bind
+    ## ref: https://www.rabbitmq.com/ldap.html#usernames-and-dns
+    ##
+    user_dn_pattern: cn=${username},dc=example,dc=org
+    tls:
+      ## If you enabled TLS/SSL you can set advaced options using the advancedConfiguration parameter.
+      ##
+      enabled: false
+
+  ## extraVolumes and extraVolumeMounts allows you to mount other volumes
+  ## Examples:
+  ## extraVolumeMounts:
+  ##   - name: extras
+  ##     mountPath: /usr/share/extras
+  ##     readOnly: true
+  ## extraVolumes:
+  ##   - name: extras
+  ##     emptyDir: {}
+  ##
+  extraVolumeMounts: []
+  extraVolumes: []
+
+  ## Optionally specify extra secrets to be created by the chart.
+  ## This can be useful when combined with load_definitions to automatically create the secret containing the definitions to be loaded.
+  ## Example:
+  ## extraSecrets:
+  ##   load-definition:
+  ##     load_definition.json: |
+  ##       {
+  ##         ...
+  ##       }
+  ##
+  ## Set this flag to true if extraSecrets should be created with <release-name> prepended.
+  ##
+  extraSecretsPrependReleaseName: false
+  extraSecrets: {}
+
+  ## Number of RabbitMQ replicas to deploy
+  ##
+  replicaCount: 1
+
+  ## Use an alternate scheduler, e.g. "stork".
+  ## ref: https://kubernetes.io/docs/tasks/administer-cluster/configure-multiple-schedulers/
+  ##
+  # schedulerName:
+
+  ## RabbitMQ should be initialized one by one when building cluster for the first time.
+  ## Therefore, the default value of podManagementPolicy is 'OrderedReady'
+  ## Once the RabbitMQ participates in the cluster, it waits for a response from another
+  ## RabbitMQ in the same cluster at reboot, except the last RabbitMQ of the same cluster.
+  ## If the cluster exits gracefully, you do not need to change the podManagementPolicy
+  ## because the first RabbitMQ of the statefulset always will be last of the cluster.
+  ## However if the last RabbitMQ of the cluster is not the first RabbitMQ due to a failure,
+  ## you must change podManagementPolicy to 'Parallel'.
+  ## ref : https://www.rabbitmq.com/clustering.html#restarting
+  ##
+  podManagementPolicy: OrderedReady
+
+  ## Pod labels. Evaluated as a template
+  ## Ref: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
+  ##
+  podLabels: {}
+
+  ## Pod annotations. Evaluated as a template
+  ## ref: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/
+  ##
+  podAnnotations: {}
+
+  ## updateStrategy for RabbitMQ statefulset
+  ## ref: https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#update-strategies
+  ##
+  updateStrategyType: RollingUpdate
+
+  ## Statefulset labels. Evaluated as a template
+  ## Ref: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
+  ##
+  statefulsetLabels: {}
+
+  ## Name of the priority class to be used by RabbitMQ pods, priority class needs to be created beforehand
+  ## Ref: https://kubernetes.io/docs/concepts/configuration/pod-priority-preemption/
+  ##
+  priorityClassName: ''
+
+  ## Pod affinity preset
+  ## ref: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#inter-pod-affinity-and-anti-affinity
+  ## Allowed values: soft, hard
+  ##
+  podAffinityPreset: ""
+
+  ## Pod anti-affinity preset
+  ## Ref: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#inter-pod-affinity-and-anti-affinity
+  ## Allowed values: soft, hard
+  ##
+  podAntiAffinityPreset: soft
+
+  ## Node affinity preset
+  ## Ref: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#node-affinity
+  ## Allowed values: soft, hard
+  ##
+  nodeAffinityPreset:
+    ## Node affinity type
+    ## Allowed values: soft, hard
+    ##
+    type: ""
+    ## Node label key to match
+    ## E.g.
+    ## key: "kubernetes.io/e2e-az-name"
+    ##
+    key: ""
+    ## Node label values to match
+    ## E.g.
+    ## values:
+    ##   - e2e-az1
+    ##   - e2e-az2
+    ##
+    values: []
+
+  ## Affinity for pod assignment. Evaluated as a template
+  ## Ref: https://kubernetes.io/docs/concepts/configuration/assign-pod-node/#affinity-and-anti-affinity
+  ## Note: podAffinityPreset, podAntiAffinityPreset, and  nodeAffinityPreset will be ignored when it's set
+  ##
+  affinity: {}
+
+  ## Node labels for pod assignment. Evaluated as a template
+  ## ref: https://kubernetes.io/docs/user-guide/node-selection/
+  ##
+  nodeSelector: {}
+
+  ## Tolerations for pod assignment. Evaluated as a template
+  ## Ref: https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
+  ##
+  tolerations: []
+
+  ## Topology Spread Constraints for pod assignment spread across your cluster among failure-domains. Evaluated as a template
+  ## Ref: https://kubernetes.io/docs/concepts/workloads/pods/pod-topology-spread-constraints/#spread-constraints-for-pods
+  ##
+  topologySpreadConstraints: {}
+
+  ## RabbitMQ pods' Security Context
+  ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-pod
+  ##
+  podSecurityContext:
+    enabled: true
+    fsGroup: 1001
+    runAsUser: 1001
+
+  ## RabbitMQ containers' Security Context
+  ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-container
+  ## Example:
+  ##   containerSecurityContext:
+  ##     capabilities:
+  ##       drop: ["NET_RAW"]
+  ##     readOnlyRootFilesystem: true
+  ##
+  containerSecurityContext: {}
+
+  ## RabbitMQ containers' resource requests and limits
+  ## ref: http://kubernetes.io/docs/user-guide/compute-resources/
+  ##
+  resources:
+    # We usually recommend not to specify default resources and to leave this as a conscious
+    # choice for the user. This also increases chances charts run on environments with little
+    # resources, such as Minikube. If you do want to specify resources, uncomment the following
+    # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+    limits: {}
+    #   cpu: 1000m
+    #   memory: 2Gi
+    requests: {}
+    #   cpu: 1000m
+    #   memory: 2Gi
+
+  ## RabbitMQ containers' liveness and readiness probes.
+  ## ref: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#container-probes
+  ##
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 120
+    timeoutSeconds: 20
+    periodSeconds: 30
+    failureThreshold: 6
+    successThreshold: 1
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 10
+    timeoutSeconds: 20
+    periodSeconds: 30
+    failureThreshold: 3
+    successThreshold: 1
+
+  ## Custom Liveness probe
+  ##
+  customLivenessProbe: {}
+
+  ## Custom Rediness probe
+  ##
+  customReadinessProbe: {}
+
+  ## Custom Startup probe
+  ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-startup-probes
+  ##
+  customStartupProbe: {}
+
+  ## Add init containers to the pod
+  ## Example:
+  ## initContainers:
+  ##   - name: your-image-name
+  ##     image: your-image
+  ##     imagePullPolicy: Always
+  ##     ports:
+  ##       - name: portname
+  ##         containerPort: 1234
+  ##
+  initContainers: {}
+
+  ## Add sidecars to the pod.
+  ## Example:
+  ## sidecars:
+  ##   - name: your-image-name
+  ##     image: your-image
+  ##     imagePullPolicy: Always
+  ##     ports:
+  ##       - name: portname
+  ##         containerPort: 1234
+  ##
+  sidecars: {}
+
+  ## RabbitMQ pods ServiceAccount
+  ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/
+  ##
+  serviceAccount:
+    ## Specifies whether a ServiceAccount should be created
+    ##
+    create: true
+    ## The name of the ServiceAccount to use.
+    ## If not set and create is true, a name is generated using the rabbitmq.fullname template
+    ##
+    # name:
+
+  ## Role Based Access
+  ## ref: https://kubernetes.io/docs/admin/authorization/rbac/
+  ##
+  rbac:
+    ## Whether RBAC rules should be created
+    ## binding RabbitMQ ServiceAccount to a role
+    ## that allows RabbitMQ pods querying the K8s API
+    ##
+    create: true
+
+  persistence:
+    ## this enables PVC templates that will create one per pod
+    ##
+    enabled: true
+
+    ## rabbitmq data Persistent Volume Storage Class
+    ## If defined, storageClassName: <storageClass>
+    ## If set to "-", storageClassName: "", which disables dynamic provisioning
+    ## If undefined (the default) or set to null, no storageClassName spec is
+    ##   set, choosing the default provisioner.  (gp2 on AWS, standard on
+    ##   GKE, AWS & OpenStack)
+    ##
+    # storageClass: "-"
+    ## selector can be used to match an existing PersistentVolume
+    ## selector:
+    ##   matchLabels:
+    ##     app: my-app
+    ##
+    selector: {}
+    accessMode: ReadWriteOnce
+
+    ## Existing PersistentVolumeClaims
+    ## The value is evaluated as a template
+    ## So, for example, the name can depend on .Release or .Chart
+    # existingClaim: ""
+
+    ## If you change this value, you might have to adjust `rabbitmq.diskFreeLimit` as well.
+    ##
+    size: 8Gi
+
+    volumes:
+    #  - name: volume_name
+    #    emptyDir: {}
+
+  ## Pod Disruption Budget configuration
+  ## ref: https://kubernetes.io/docs/tasks/run-application/configure-pdb/
+  ##
+  pdb:
+    create: false
+    ## Min number of pods that must still be available after the eviction
+    ##
+    minAvailable: 1
+    ## Max number of pods that can be unavailable after the eviction
+    ##
+    # maxUnavailable: 1
+
+  ## Network Policy configuration
+  ## ref: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+  ##
+  networkPolicy:
+    ## Enable creation of NetworkPolicy resources
+    ##
+    enabled: false
+    ## The Policy model to apply. When set to false, only pods with the correct
+    ## client label will have network access to the ports RabbitMQ is listening
+    ## on. When true, RabbitMQ will accept connections from any source
+    ## (with the correct destination port).
+    ##
+    allowExternal: true
+    ## Additional NetworkPolicy Ingress "from" rules to set. Note that all rules are OR-ed.
+    ##
+    # additionalRules:
+    #  - matchLabels:
+    #    - role: frontend
+    #  - matchExpressions:
+    #    - key: role
+    #      operator: In
+    #      values:
+    #        - frontend
+
+  ## Kubernetes service type
+  ##
+  service:
+    type: ClusterIP
+    ## Amqp port
+    ## ref: https://github.com/bitnami/bitnami-docker-rabbitmq#environment-variables
+    ##
+    port: 5672
+
+    ## Amqp service port name
+    ##
+    portName: amqp
+
+    ## Amqp Tls port
+    ##
+    tlsPort: 5671
+
+    ## Amqp Tls service port name
+    ##
+    tlsPortName: amqp-ssl
+
+    ## Node port
+    ## ref: https://github.com/bitnami/bitnami-docker-rabbitmq#environment-variables
+    ##
+    # nodePort: 30672
+
+    ## Node port Tls
+    ##
+    # tlsNodePort: 30671
+
+    ## Dist port
+    ## ref: https://github.com/bitnami/bitnami-docker-rabbitmq#environment-variables
+    ##
+    distPort: 25672
+
+    ## Dist service port name
+    ##
+    distPortName: dist
+
+    ## Node port (Manager)
+    ##
+    # distNodePort: 30676
+
+    ## RabbitMQ Manager port
+    ## ref: https://github.com/bitnami/bitnami-docker-rabbitmq#environment-variables
+    ##
+    managerPortEnabled: true
+
+    managerPort: 15672
+
+    ## RabbitMQ Manager service port name
+    ##
+    managerPortName: http-stats
+
+    ## Node port (Manager)
+    ##
+    # managerNodePort: 30673
+
+    ## RabbitMQ Prometheues metrics port
+    ##
+    metricsPort: 9419
+
+    ## RabbitMQ Prometheues metrics service port name
+    ##
+    metricsPortName: metrics
+
+    ## Node port for metrics
+    ##
+    # metricsNodePort: 30674
+
+    ## Node port for EPMD Discovery
+    ##
+    # epmdNodePort: 30675
+
+    ## Service port name for EPMD Discovery
+    ##
+    epmdPortName: epmd
+
+    ## Extra ports to expose
+    ## E.g.:
+    ## extraPorts:
+    ## - name: new_svc_name
+    ##   port: 1234
+    ##   targetPort: 1234
+    ##
+    extraPorts: []
+
+    ## Load Balancer sources
+    ## https://kubernetes.io/docs/tasks/access-application-cluster/configure-cloud-provider-firewall/#restrict-access-for-loadbalancer-service
+    ##
+    # loadBalancerSourceRanges:
+    # - 10.10.10.0/24
+
+    ## Set the ExternalIPs
+    ##
+    # externalIPs:
+
+    ## Enable client source IP preservation
+    ## ref http://kubernetes.io/docs/tasks/access-application-cluster/create-external-load-balancer/#preserving-the-client-source-ip
+    ##
+    externalTrafficPolicy: Cluster
+
+    ## Set the LoadBalancerIP
+    ##
+    # loadBalancerIP:
+
+    ## Service labels. Evaluated as a template
+    ##
+    labels: {}
+
+    ## Service annotations. Evaluated as a template
+    ## Example:
+    ## annotations:
+    ##   service.beta.kubernetes.io/aws-load-balancer-internal: 0.0.0.0/0
+    ##
+    annotations: {}
+    ## Headless Service annotations. Evaluated as a template
+    ## Example:
+    ## annotations:
+    ##   external-dns.alpha.kubernetes.io/internal-hostname: rabbitmq.example.com
+    ##
+    annotationsHeadless: {}
+
+  ## Configure the ingress resource that allows you to access the
+  ## RabbitMQ installation. Set up the URL
+  ## ref: http://kubernetes.io/docs/user-guide/ingress/
+  ##
+  ingress:
+    ## Set to true to enable ingress record generation
+    ##
+    enabled: false
+
+    ## Path for the default host. You may need to set this to '/*' in order to use this
+    ## with ALB ingress controllers.
+    ##
+    path: /
+
+    ## Ingress Path type
+    ##
+    pathType: ImplementationSpecific
+
+    ## Set this to true in order to add the corresponding annotations for cert-manager
+    ##
+    certManager: false
+
+    ## When the ingress is enabled, a host pointing to this will be created
+    ##
+    hostname: rabbitmq.local
+
+    ## Ingress annotations done as key:value pairs
+    ## For a full list of possible ingress annotations, please see
+    ## ref: https://github.com/kubernetes/ingress-nginx/blob/master/docs/user-guide/nginx-configuration/annotations.md
+    ##
+    ## If certManager is set to true, annotation kubernetes.io/tls-acme: "true" will automatically be set
+    ##
+    annotations: {}
+
+    ## Enable TLS configuration for the hostname defined at ingress.hostname parameter
+    ## TLS certificates will be retrieved from a TLS secret with name: {{- printf "%s-tls" .Values.ingress.hostname }}
+    ## or a custom one if you use the tls.existingSecret parameter
+    ## You can use the ingress.secrets parameter to create this TLS secret or relay on cert-manager to create it
+    ##
+    tls: false
+    ## existingSecret: name-of-existing-secret
+    ##
+
+    ## The list of additional hostnames to be covered with this ingress record.
+    ## Most likely the hostname above will be enough, but in the event more hosts are needed, this is an array
+    ## extraHosts:
+    ## - name: rabbitmq.local
+    ##   path: /
+    ##
+
+    ## The tls configuration for additional hostnames to be covered with this ingress record.
+    ## see: https://kubernetes.io/docs/concepts/services-networking/ingress/#tls
+    ## extraTls:
+    ## - hosts:
+    ##     - rabbitmq.local
+    ##   secretName: rabbitmq.local-tls
+    ##
+
+    ## If you're providing your own certificates, please use this to add the certificates as secrets
+    ## key and certificate should start with -----BEGIN CERTIFICATE----- or
+    ## -----BEGIN RSA PRIVATE KEY-----
+    ##
+    ## name should line up with a tlsSecret set further up
+    ## If you're using cert-manager, this is unneeded, as it will create the secret for you if it is not set
+    ##
+    ## It is also possible to create and manage the certificates outside of this helm chart
+    ## Please see README.md for more information
+    ##
+    secrets: []
+    ## - name: rabbitmq.local-tls
+    ##   key:
+    ##   certificate:
+    ##
+
+  ## Prometheus Metrics
+  ##
+  metrics:
+    enabled: false
+    plugins: 'rabbitmq_prometheus'
+    ## Prometheus pod annotations
+    ## ref: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/
+    ##
+    podAnnotations:
+      prometheus.io/scrape: 'true'
+      prometheus.io/port: '{{ .Values.service.metricsPort }}'
+
+    ## Prometheus Service Monitor
+    ## ref: https://github.com/coreos/prometheus-operator
+    ##
+    serviceMonitor:
+      ## If the operator is installed in your cluster, set to true to create a Service Monitor Entry
+      ##
+      enabled: false
+      ## Specify the namespace in which the serviceMonitor resource will be created
+      ##
+      # namespace: ""
+      ## Specify the interval at which metrics should be scraped
+      ##
+      interval: 30s
+      ## Specify the timeout after which the scrape is ended
+      ##
+      # scrapeTimeout: 30s
+      ## Specify Metric Relabellings to add to the scrape endpoint
+      ##
+      # relabellings:
+      ## Specify honorLabels parameter to add the scrape endpoint
+      ##
+      honorLabels: false
+      ## Specify the release for ServiceMonitor. Sometimes it should be custom for prometheus operator to work
+      ##
+      # release: ""
+      ## Used to pass Labels that are used by the Prometheus installed in your cluster to select Service Monitors to work with
+      ## ref: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#prometheusspec
+      ##
+      additionalLabels: {}
+
+    ## Custom PrometheusRule to be defined
+    ## The value is evaluated as a template, so, for example, the value can depend on .Release or .Chart
+    ## ref: https://github.com/coreos/prometheus-operator#customresourcedefinitions
+    ##
+    prometheusRule:
+      enabled: false
+      additionalLabels: {}
+      namespace: ''
+      ## List of rules, used as template by Helm.
+      ## These are just examples rules inspired from https://awesome-prometheus-alerts.grep.to/rules.html
+      # rules:
+      #   - alert: RabbitmqDown
+      #     expr: rabbitmq_up{service="{{ template "rabbitmq.fullname" . }}"} == 0
+      #     for: 5m
+      #     labels:
+      #       severity: error
+      #     annotations:
+      #       summary: Rabbitmq down (instance {{ "{{ $labels.instance }}" }})
+      #       description: RabbitMQ node down
+      #   - alert: ClusterDown
+      #     expr: |
+      #       sum(rabbitmq_running{service="{{ template "rabbitmq.fullname" . }}"})
+      #       < {{ .Values.replicaCount }}
+      #     for: 5m
+      #     labels:
+      #       severity: error
+      #     annotations:
+      #       summary: Cluster down (instance {{ "{{ $labels.instance }}" }})
+      #       description: |
+      #           Less than {{ .Values.replicaCount }} nodes running in RabbitMQ cluster
+      #           VALUE = {{ "{{ $value }}" }}
+      #   - alert: ClusterPartition
+      #     expr: rabbitmq_partitions{service="{{ template "rabbitmq.fullname" . }}"} > 0
+      #     for: 5m
+      #     labels:
+      #       severity: error
+      #     annotations:
+      #       summary: Cluster partition (instance {{ "{{ $labels.instance }}" }})
+      #       description: |
+      #           Cluster partition
+      #           VALUE = {{ "{{ $value }}" }}
+      #   - alert: OutOfMemory
+      #     expr: |
+      #       rabbitmq_node_mem_used{service="{{ template "rabbitmq.fullname" . }}"}
+      #       / rabbitmq_node_mem_limit{service="{{ template "rabbitmq.fullname" . }}"}
+      #       * 100 > 90
+      #     for: 5m
+      #     labels:
+      #       severity: warning
+      #     annotations:
+      #       summary: Out of memory (instance {{ "{{ $labels.instance }}" }})
+      #       description: |
+      #           Memory available for RabbmitMQ is low (< 10%)\n  VALUE = {{ "{{ $value }}" }}
+      #           LABELS: {{ "{{ $labels }}" }}
+      #   - alert: TooManyConnections
+      #     expr: rabbitmq_connectionsTotal{service="{{ template "rabbitmq.fullname" . }}"} > 1000
+      #     for: 5m
+      #     labels:
+      #       severity: warning
+      #     annotations:
+      #       summary: Too many connections (instance {{ "{{ $labels.instance }}" }})
+      #       description: |
+      #           RabbitMQ instance has too many connections (> 1000)
+      #           VALUE = {{ "{{ $value }}" }}\n  LABELS: {{ "{{ $labels }}" }}
+      rules: []
+
+  ## Init Container parameters
+  ## Change the owner and group of the persistent volume(s) mountpoint(s) to 'runAsUser:fsGroup' on each component
+  ## values from the securityContext section of the component
+  ##
+  volumePermissions:
+    enabled: false
+    image:
+      registry: docker.io
+      repository: bitnami/bitnami-shell
+      tag: "10"
+      ## Specify a imagePullPolicy
+      ## Defaults to 'Always' if image tag is 'latest', else set to 'IfNotPresent'
+      ## ref: http://kubernetes.io/docs/user-guide/images/#pre-pulling-images
+      ##
+      pullPolicy: Always
+      ## Optionally specify an array of imagePullSecrets (secrets must be manually created in the namespace)
+      ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+      ## Example:
+      ## pullSecrets:
+      ##   - myRegistryKeySecretName
+      ##
+      pullSecrets: []
+    ## Init Container resource requests and limits
+    ## ref: http://kubernetes.io/docs/user-guide/compute-resources/
+    ##
+    resources:
+      # We usually recommend not to specify default resources and to leave this as a conscious
+      # choice for the user. This also increases chances charts run on environments with little
+      # resources, such as Minikube. If you do want to specify resources, uncomment the following
+      # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+      limits: {}
+      #   cpu: 100m
+      #   memory: 128Mi
+      requests: {}
+      #   cpu: 100m
+      #   memory: 128Mi
+
+# https://github.com/bitnami/charts/blob/master/bitnami/memcached/values.yaml
+memcached:
+  ## Global Docker image parameters
+  ## Please, note that this will override the image parameters, including dependencies, configured to use the global value
+  ## Current available global Docker image parameters: imageRegistry and imagePullSecrets
+  ##
+  # global:
+  #   imageRegistry: myRegistryName
+  #   imagePullSecrets:
+  #     - myRegistryKeySecretName
+  #   storageClass: myStorageClass
+
+  ## Bitnami Memcached image version
+  ## ref: https://hub.docker.com/r/bitnami/memcached/tags/
+  ##
+  image:
+    registry: docker.io
+    repository: bitnami/memcached
+    tag: 1.6.9-debian-10-r86
+    ## Specify a imagePullPolicy
+    ## Defaults to 'Always' if image tag is 'latest', else set to 'IfNotPresent'
+    ## ref: http://kubernetes.io/docs/user-guide/images/#pre-pulling-images
+    ##
+    pullPolicy: IfNotPresent
+    ## Optionally specify an array of imagePullSecrets.
+    ## Secrets must be manually created in the namespace.
+    ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+    ##
+    # pullSecrets:
+    #   - myRegistryKeySecretName
+
+    ## Set to true if you would like to see extra information on logs
+    ##
+    debug: false
+
+  ## String to partially override common.names.fullname template (will maintain the release name)
+  ##
+  # nameOverride:
+
+  ## String to fully override common.names.fullname template
+  ##
+  # fullnameOverride:
+
+  ## Add labels to all the deployed resources
+  ##
+  commonLabels: {}
+
+  ## Add annotations to all the deployed resources
+  ##
+  commonAnnotations: {}
+
+  ## Kubernetes Cluster Domain
+  ##
+  clusterDomain: cluster.local
+
+  ## Extra objects to deploy (value evaluated as a template)
+  ##
+  extraDeploy: []
+
+  ## Memcached architecture. Allowed values: standalone or high-availability
+  ##
+  architecture: standalone
+
+  ## Deployment pod host aliases
+  ## https://kubernetes.io/docs/concepts/services-networking/add-entries-to-pod-etc-hosts-with-host-aliases/
+  ##
+  hostAliases: []
+
+  ## Memcached admin user
+  ## ref: https://github.com/bitnami/bitnami-docker-memcached#creating-the-memcached-admin-user
+  ##
+  # memcachedUsername:
+
+  ## Memcached admin password
+  ## ref: https://github.com/bitnami/bitnami-docker-memcached#creating-the-memcached-admin-user
+  ##
+  # memcachedPassword:
+
+  ## Number of containers to run
+  ##
+  replicaCount: 1
+
+  ## Command and args for running the container (set to default if not set). Use array form
+  ##
+  command: []
+  arguments:
+    - /run.sh
+    # - -m <maxMemoryLimit>
+    # - -I <maxItemSize>
+    # - -vv
+
+  ## Extra environment vars to pass.
+  ## ref: https://github.com/bitnami/bitnami-docker-memcached#configuration
+  ##
+  extraEnv: []
+
+  ## Service parameters
+  ##
+  ##
+  service:
+    ## Service type
+    ##
+    type: ClusterIP
+    ## Memcached port
+    ##
+    port: 11211
+    ## Specify the nodePort value for the LoadBalancer and NodePort service types.
+    ## ref: https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport
+    ##
+    nodePort: ""
+    ## Set the LoadBalancer service type to internal only.
+    ## ref: https://kubernetes.io/docs/concepts/services-networking/service/#internal-load-balancer
+    ##
+    # loadBalancerIP:
+    ## Annotations for the Memcached service
+    ##
+    annotations: {}
+
+  ## Memcached containers' resource requests and limits
+  ## ref: http://kubernetes.io/docs/user-guide/compute-resources/
+  ##
+  resources:
+    # We usually recommend not to specify default resources and to leave this as a conscious
+    # choice for the user. This also increases chances charts run on environments with little
+    # resources, such as Minikube. If you do want to specify resources, uncomment the following
+    # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+    limits: {}
+    #   cpu: 100m
+    #   memory: 128Mi
+    requests:
+      memory: 256Mi
+      cpu: 250m
+
+  ## If you want to override the port name (can be usefull when using a service mesh)
+  ## ref for istio: https://istio.io/latest/docs/ops/configuration/traffic-management/protocol-selection/
+  ##
+  portName: memcache
+
+  ## Pod Security Context
+  ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+  ##
+  securityContext:
+    enabled: true
+    fsGroup: 1001
+    runAsUser: 1001
+    readOnlyRootFilesystem: false
+
+  ## Pod annotations
+  ## ref: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/
+  ##
+  podAnnotations: {}
+
+  ## Pod affinity preset
+  ## ref: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#inter-pod-affinity-and-anti-affinity
+  ## Allowed values: soft, hard
+  ##
+  podAffinityPreset: ""
+
+  ## Pod anti-affinity preset
+  ## Ref: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#inter-pod-affinity-and-anti-affinity
+  ## Allowed values: soft, hard
+  ##
+  podAntiAffinityPreset: soft
+
+  ## Node affinity preset
+  ## Ref: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#node-affinity
+  ## Allowed values: soft, hard
+  ##
+  nodeAffinityPreset:
+    ## Node affinity type
+    ## Allowed values: soft, hard
+    ##
+    type: ""
+    ## Node label key to match
+    ## E.g.
+    ## key: "kubernetes.io/e2e-az-name"
+    ##
+    key: ""
+    ## Node label values to match
+    ## E.g.
+    ## values:
+    ##   - e2e-az1
+    ##   - e2e-az2
+    ##
+    values: []
+
+  ## Affinity for pod assignment. Evaluated as a template.
+  ## Ref: https://kubernetes.io/docs/concepts/configuration/assign-pod-node/#affinity-and-anti-affinity
+  ## Note: podAffinityPreset, podAntiAffinityPreset, and nodeAffinityPreset will be ignored when it's set
+  ##
+  affinity: {}
+
+  ## Node labels for pod assignment. Evaluated as a template.
+  ## ref: https://kubernetes.io/docs/user-guide/node-selection/
+  ##
+  nodeSelector: {}
+
+  ## Tolerations for pod assignment. Evaluated as a template.
+  ## ref: https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
+  ##
+  tolerations: []
+
+  ## Pod priority
+  ## ref: https://kubernetes.io/docs/concepts/configuration/pod-priority-preemption/
+  ##
+  # priorityClassName: ""
+
+  ## Persistence - used for dumping and restoring states between recreations
+  ## Ref: https://github.com/memcached/memcached/wiki/WarmRestart
+  ##
+  persistence:
+    enabled: false
+    ## Persistent Volume Storage Class
+    ## If defined, storageClassName: <storageClass>
+    ## If set to "-", storageClassName: "", which disables dynamic provisioning
+    ## If undefined (the default) or set to null, no storageClassName spec is
+    ##  set, choosing the default provisioner.  (gp2 on AWS, standard on
+    ##  GKE, AWS & OpenStack)
+    ##
+    # storageClass: "-"
+    ## Persistent Volume Claim annotations
+    ##
+    annotations: {}
+    ## Persistent Volume Access Mode
+    ##
+    accessModes:
+      - ReadWriteOnce
+    ## Persistent Volume size
+    ##
+    size: 8Gi
+
+  ## Prometheus Exporter / Metrics
+  ##
+  metrics:
+    enabled: false
+    ## Bitnami Memcached Prometheus Exporter image
+    ## ref: https://hub.docker.com/r/bitnami/memcached-exporter/tags/
+    ##
+    image:
+      registry: docker.io
+      repository: bitnami/memcached-exporter
+      tag: 0.8.0-debian-10-r75
+      pullPolicy: IfNotPresent
+      ## Optionally specify an array of imagePullSecrets.
+      ## Secrets must be manually created in the namespace.
+      ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+      ##
+      # pullSecrets:
+      #   - myRegistryKeySecretName
+    ## Metrics exporter pod Annotation and Labels
+    ## ref: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/
+    ##
+    podAnnotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "9150"
+    ## If you want to override the port name (can be usefull when using a service mesh)
+    ## ref for istio: https://istio.io/latest/docs/ops/configuration/traffic-management/protocol-selection/
+    ##
+    portName: metrics
+    ## Memcached Prometheus exporter resource requests and limits
+    ## ref: http://kubernetes.io/docs/user-guide/compute-resources/
+    ##
+    resources:
+      # We usually recommend not to specify default resources and to leave this as a conscious
+      # choice for the user. This also increases chances charts run on environments with little
+      # resources, such as Minikube. If you do want to specify resources, uncomment the following
+      # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+      limits: {}
+      #   cpu: 100m
+      #   memory: 128Mi
+      requests: {}
+      #   cpu: 100m
+      #   memory: 128Mi
+    service:
+      ## Service type
+      ##
+      type: ClusterIP
+      ## Memcached Prometheus exporter port
+      ##
+      port: 9150
+      ## Annotations for the Prometheus metrics service
+      ##
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.metrics.service.port }}"
+    ## Prometheus Operator ServiceMonitor configuration
+    ##
+    serviceMonitor:
+      enabled: false
+      ## Namespace in which Prometheus is running
+      ##
+      # namespace: monitoring
+
+      ## Interval at which metrics should be scraped.
+      ## ref: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
+      ##
+      # interval: 10s
+
+      ## Timeout after which the scrape is ended
+      ## ref: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
+      ##
+      # scrapeTimeout: 10s
+
+      ## ServiceMonitor selector labels
+      ## ref: https://github.com/bitnami/charts/tree/master/bitnami/prometheus-operator#prometheus-configuration
+      ##
+      # selector:
+      #   prometheus: my-prometheus
