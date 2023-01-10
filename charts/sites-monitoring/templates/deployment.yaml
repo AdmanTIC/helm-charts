@@ -98,14 +98,14 @@ spec:
                 elif [[ "$unavailable_sites_percent" -ge {{ $.Values.warning }} ]]; then
                   return_msg="WARNING - $unavailable_sites_percent% ($unavailable_sites_number/$total_sites_number) of the sites are unavailable : $unavailable_sites"
                 else
-                  return_msg="UNKNOWN - Cannot retrieve sites unavailability"
+                  return_msg="CRITICAL - Cannot retrieve sites unavailability"
                 fi
                 echo "$return_msg"
               }
 
               while :; do
-                return_msg="UNKNOWN - Cannot retrieve sites unavailability"
-                return_msg=$(run_cmd "check_availability" {{ $.Values.interval }}) || return_msg="UNKNOWN - Timeout : checks exceed interval ({{ $.Values.interval }}s)"
+                return_msg="CRITICAL - Cannot retrieve sites unavailability"
+                return_msg=$(run_cmd "check_availability" {{ $.Values.interval }}) || return_msg="CRITICAL - Timeout : checks exceed interval ({{ $.Values.interval }}s)"
                 echo "$return_msg" > /usr/share/nginx/html/check_sites_availability
               done
 
