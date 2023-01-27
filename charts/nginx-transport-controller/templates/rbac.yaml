@@ -1,0 +1,69 @@
+# ########################### /!\ WARNING ###########################
+# nginx-transport-controller has to be deployed in the same namespace
+# as nginx-ingress-controller
+# ###################################################################
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "short_name" $ }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - watch
+      - update
+      - patch
+      - get
+  - apiGroups:
+      - ""
+    resources:
+      - services
+    verbs:
+      - create
+      - delete
+      - update
+      - patch
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "short_name" $ }}-sa
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "short_name" $ }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "short_name" $ }}-sa
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "short_name" $ }}
+rules:
+- apiGroups:
+    - admantic.fr
+  resources:
+    - nginxtransportingresses
+  verbs:
+    - get
+    - list
+    - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "short_name" $ }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "short_name" $ }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "short_name" $ }}-sa
+  namespace: {{ .Release.Namespace }}
