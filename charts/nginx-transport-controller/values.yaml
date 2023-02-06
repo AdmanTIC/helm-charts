@@ -1,0 +1,27 @@
+---
+args:
+  ingressController:
+    service: ""
+    tcpConfigMap: ""
+    udpConfigMap: ""
+
+replicas: 1
+image:
+  imagePullSecrets: ""
+  imagePullPolicy: ""
+  repository: "admantic/nginx-transport-controller"
+  tag: "v0.1"
+
+  livenessProbe: {}
+  startupProbe: {}
+  readinessProbe: {}
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+  extraEnv: {}
