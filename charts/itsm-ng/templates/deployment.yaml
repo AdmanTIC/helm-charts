@@ -57,17 +57,17 @@ spec:
               port: http
           env:
           - name: TIMEZONE
-            value: {{ .Values.itsmTimezone }}
+            value: {{ .Values.itsm.TZ }}
           - name: DBDATABASE
-            value: {{ .Values.itsmDbDatabase }}
+            value: {{ .Values.itsm.DB.Database }}
           - name: DBUSER
-            value: {{ .Values.itsmDbUser }}
+            value: {{ .Values.itsm.DB.User }}
           - name: DBPASSWORD
-            value: {{ .Values.itsmDbPassword }}
+            value: {{ .Values.itsm.DB.Password }}
           - name: DBHOST
             value: {{ include "mariadb.primary.fullname" .Subcharts.mariadb }}
           - name: ITSM_ADMIN_PASSWORD
-            value: {{ .Values.itsmAdminPassword }}
+            value: {{ .Values.itsm.AdminPassword }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}
