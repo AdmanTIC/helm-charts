@@ -65,7 +65,7 @@ spec:
           - name: DBPASSWORD
             value: {{ .Values.itsmDbPassword }}
           - name: DBHOST
-            value: {{ .Values.itsmDbHost }}
+            value: {{ include "mariadb.primary.fullname" .Subcharts.mariadb }}
           - name: ITSM_ADMIN_PASSWORD
             value: {{ .Values.itsmAdminPassword }}
           resources:

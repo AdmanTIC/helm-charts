@@ -90,7 +90,6 @@ itsmTimezone: Europe/Paris
 itsmDbDatabase: itsm
 itsmDbUser: itsm
 itsmDbPassword: 
-itsmDbHost: mariadb
 itsmAdminPassword: 
 
 mariadb:
