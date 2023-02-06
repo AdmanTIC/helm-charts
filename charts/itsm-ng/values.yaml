@@ -5,10 +5,10 @@
 replicaCount: 1
 
 image:
-  repository: admantic/itsm-ng:1.3.0-001
+  repository: admantic/itsm-ng
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
-  tag: ""
+  tag: "1.3.0-002"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -85,14 +85,21 @@ tolerations: []
 
 affinity: {}
 
+
 itsmTimezone: Europe/Paris
 itsmDbDatabase: itsm
 itsmDbUser: itsm
-itsmDbPassword: CHANGEME
+itsmDbPassword: 
 itsmDbHost: mariadb
-itsmAdminPassword: CHANGEME
+itsmAdminPassword: 
 
 mariadb:
-  database: itsm
-  username: itsm
-  password: CHANGEME
+  auth:
+    database: itsm
+    username: itsm
+    password:
+  primary:
+    persistence:
+      size: 1G
+      storageClass: ""
+
