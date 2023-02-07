@@ -59,15 +59,15 @@ spec:
           - name: TIMEZONE
             value: {{ .Values.itsm.TZ }}
           - name: DBDATABASE
-            value: {{ .Values.itsm.DB.Database }}
+            value: {{ .Values.itsm.database.name }}
           - name: DBUSER
-            value: {{ .Values.itsm.DB.User }}
+            value: {{ .Values.itsm.database.user }}
           - name: DBPASSWORD
-            value: {{ .Values.itsm.DB.Password }}
+            value: {{ .Values.itsm.database.password }}
           - name: DBHOST
             value: {{ include "mariadb.primary.fullname" .Subcharts.mariadb }}
           - name: ITSM_ADMIN_PASSWORD
-            value: {{ .Values.itsm.AdminPassword }}
+            value: {{ .Values.itsm.adminPassword }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}

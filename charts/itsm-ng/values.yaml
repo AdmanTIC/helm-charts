@@ -88,19 +88,18 @@ affinity: {}
 
 itsm:
   TZ: Europe/Paris
-  DB:
-    Database: itsm
-    User: itsm
-    Password: ""
-  AdminPassword: ""
+  database:
+    name: itsm
+    user: itsm
+    password: ""
+  adminPassword: ""
 
 mariadb:
   auth:
     database: itsm
     username: itsm
-    password:
+    password: ""
   primary:
     persistence:
       size: 1G
       storageClass: ""
-
