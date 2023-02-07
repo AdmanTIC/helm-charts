@@ -50,7 +50,13 @@ spec:
             timeoutSeconds: 10
             successThreshold: 1
             failureThreshold: 3
-            initialDelaySeconds: 60
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            httpGet:
+              path: /
+              port: http
+          startupProbe:
+            failureThreshold: 60
             periodSeconds: 10
             httpGet:
               path: /
