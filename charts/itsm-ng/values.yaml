@@ -86,20 +86,20 @@ tolerations: []
 affinity: {}
 
 
-itsmTimezone: Europe/Paris
-itsmDbDatabase: itsm
-itsmDbUser: itsm
-itsmDbPassword: 
-itsmDbHost: mariadb
-itsmAdminPassword: 
+itsm:
+  TZ: Europe/Paris
+  database:
+    name: itsm
+    user: itsm
+    password: ""
+  adminPassword: ""
 
 mariadb:
   auth:
     database: itsm
     username: itsm
-    password:
+    password: ""
   primary:
     persistence:
       size: 1G
       storageClass: ""
-
