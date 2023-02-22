@@ -90,10 +90,6 @@ TZ: Europe/Paris
 
 auth:
   adminPassword: ""
-  database:
-    name: itsm
-    user: itsm
-    password: ""
 
 persistence:
   enabled: false
