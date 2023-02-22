@@ -50,24 +50,30 @@ spec:
             timeoutSeconds: 10
             successThreshold: 1
             failureThreshold: 3
-            initialDelaySeconds: 5
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            httpGet:
+              path: /
+              port: http
+          startupProbe:
+            failureThreshold: 60
             periodSeconds: 10
             httpGet:
               path: /
               port: http
           env:
           - name: TIMEZONE
-            value: {{ .Values.itsmTimezone }}
+            value: {{ .Values.itsm.TZ }}
           - name: DBDATABASE
-            value: {{ .Values.itsmDbDatabase }}
+            value: {{ .Values.itsm.database.name }}
           - name: DBUSER
-            value: {{ .Values.itsmDbUser }}
+            value: {{ .Values.itsm.database.user }}
           - name: DBPASSWORD
-            value: {{ .Values.itsmDbPassword }}
+            value: {{ .Values.itsm.database.password }}
           - name: DBHOST
-            value: {{ .Values.itsmDbHost }}
+            value: {{ include "mariadb.primary.fullname" .Subcharts.mariadb }}
           - name: ITSM_ADMIN_PASSWORD
-            value: {{ .Values.itsmAdminPassword }}
+            value: {{ .Values.itsm.adminPassword }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}
