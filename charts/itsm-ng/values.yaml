@@ -86,17 +86,20 @@ tolerations: []
 affinity: {}
 
 
-itsm:
-  TZ: Europe/Paris
-  database:
-    name: itsm
-    user: itsm
-    password: ""
+TZ: Europe/Paris
+
+auth:
   adminPassword: ""
 
+persistence:
+  enabled: true
+  size: 1G
+  storageClass: ""
+
+
 mariadb:
-  auth:
-    database: itsm
+  database: itsm
+  auth: 
     username: itsm
     password: ""
   primary:

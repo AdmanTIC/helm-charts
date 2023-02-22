@@ -37,6 +37,9 @@ spec:
             - name: http
               containerPort: 80
               protocol: TCP
+          volumeMounts:
+            - name: data
+              mountPath: /var/www/html/files
           livenessProbe:
             timeoutSeconds: 5
             successThreshold: 1
@@ -63,19 +66,23 @@ spec:
               port: http
           env:
           - name: TIMEZONE
-            value: {{ .Values.itsm.TZ }}
+            value: {{ .Values.TZ }}
           - name: DBDATABASE
-            value: {{ .Values.itsm.database.name }}
+            value: {{ .Values.mariadb.database }}
           - name: DBUSER
-            value: {{ .Values.itsm.database.user }}
+            value: {{ .Values.mariadb.auth.username }}
           - name: DBPASSWORD
-            value: {{ .Values.itsm.database.password }}
+            value: {{ .Values.mariadb.auth.password }}
           - name: DBHOST
             value: {{ include "mariadb.primary.fullname" .Subcharts.mariadb }}
           - name: ITSM_ADMIN_PASSWORD
-            value: {{ .Values.itsm.adminPassword }}
+            value: {{ .Values.auth.adminPassword }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "itsm-ng.fullname" . }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
