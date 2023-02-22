@@ -93,6 +93,9 @@ itsm:
     user: itsm
     password: ""
   adminPassword: ""
+  persistence:
+    size: 1G
+    storageClass: ""
 
 mariadb:
   auth:

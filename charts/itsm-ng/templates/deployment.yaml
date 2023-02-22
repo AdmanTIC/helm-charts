@@ -37,6 +37,9 @@ spec:
             - name: http
               containerPort: 80
               protocol: TCP
+          volumeMounts:
+            - name: data
+              mountPath: /var/www/html/files
           livenessProbe:
             timeoutSeconds: 5
             successThreshold: 1
@@ -76,6 +79,10 @@ spec:
             value: {{ .Values.itsm.adminPassword }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "itsm-ng.fullname" . }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
