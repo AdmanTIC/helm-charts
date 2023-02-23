@@ -68,7 +68,7 @@ spec:
           - name: TIMEZONE
             value: {{ .Values.TZ }}
           - name: DBDATABASE
-            value: {{ .Values.mariadb.database }}
+            value: {{ .Values.mariadb.auth.database }}
           - name: DBUSER
             value: {{ .Values.mariadb.auth.username }}
           - name: DBPASSWORD
