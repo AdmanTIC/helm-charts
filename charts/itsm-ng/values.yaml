@@ -90,6 +90,7 @@ TZ: Europe/Paris
 
 auth:
   adminPassword: ""
+  mainUserOidcLogin: ""
 
 persistence:
   enabled: true
@@ -106,3 +107,12 @@ mariadb:
     persistence:
       size: 1G
       storageClass: ""
+
+oidc:
+  provider: ""
+  clientId: ""
+  clientSecret: ""
+  mapping:
+    givenName: ""
+    familyName: ""
+    email: ""
