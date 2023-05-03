@@ -1,0 +1,13 @@
+---
+apiVersion: v2
+name: cremecrm
+description: Chart Helm for Crème CRM
+icon: https://www.cremecrm.com/sites/default/files/logo.png	
+type: application
+version: 0.0.1
+
+dependencies:
+  - name: postgresql
+    version: "12.2.8"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled
