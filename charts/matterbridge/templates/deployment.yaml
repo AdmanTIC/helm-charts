@@ -40,7 +40,7 @@ spec:
           - name: config
             mountPath: /etc/matterbridge/matterbridge.toml
             subPath: matterbridge.toml
-          {{- with .Values.msteams_session }}
+          {{- with .Values.matterbridge.msteams_session }}
           - name: config
             mountPath: /msteams_session.json
             subPath: msteams_session.json
