@@ -38,7 +38,13 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
           - name: config
-            mountPath: /etc/matterbridge
+            mountPath: /etc/matterbridge/matterbridge.toml
+            subPath: matterbridge.toml
+          {{- with .Values.msteams_session }}
+          - name: config
+            mountPath: /msteams_session.json
+            subPath: msteams_session.json
+          {{- end }}
       volumes:
       - name: config
         secret:
