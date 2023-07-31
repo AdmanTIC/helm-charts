@@ -16,9 +16,10 @@ data:
     SERVICEACCOUNT=/var/run/secrets/kubernetes.io/serviceaccount
     TOKEN=$(cat ${SERVICEACCOUNT}/token)
     CACERT=${SERVICEACCOUNT}/ca.crt
+    K8S_VERSION=$((set -eo pipefail ; curl -fsSlL --cacert ${CACERT} --header "Authorization: Bearer ${TOKEN}" -X GET ${APISERVER}/version | jq -r .gitVersion) || echo v1.23.6)
 
     echo "** Downloading kubectl"
-    curl -sL -o /usr/bin/kubectl https://storage.googleapis.com/kubernetes-release/release/$(curl -s --cacert ${CACERT} --header "Authorization: Bearer ${TOKEN}" -X GET ${APISERVER}/version | jq -r .gitVersion)/bin/linux/amd64/kubectl
+    curl -fsSlL -o /usr/bin/kubectl https://storage.googleapis.com/kubernetes-release/release/$K8S_VERSION/bin/linux/amd64/kubectl
     chmod +x /usr/bin/kubectl
     echo
     echo
