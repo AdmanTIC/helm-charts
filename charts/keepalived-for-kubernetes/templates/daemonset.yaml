@@ -55,7 +55,7 @@ spec:
             - NET_ADMIN
             - NET_BROADCAST
             - NET_RAW
-        volumeMounts: {}
+        volumeMounts: []
       dnsPolicy: ClusterFirst
       hostNetwork: true
       securityContext: {}
