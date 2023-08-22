@@ -3,7 +3,7 @@ image:
   imagePullSecrets: []
   registry: docker.io
   repository: admantic/keepalived-for-kubernetes
-  tag: "v0.2"
+  tag: "v0.3"
   imagePullPolicy: IfNotPresent
 
 auth:
