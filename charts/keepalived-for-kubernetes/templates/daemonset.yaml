@@ -19,12 +19,12 @@ spec:
         image: "{{ $.Values.image.registry }}/{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
         imagePullPolicy: {{ default "IfNotPresent" $.Values.image.imagePullPolicy }}
         command:
-        - /bin/sh
+        - /bin/bash
         - -exc
         - |
-          sh /entrypoint.sh
+          /bin/bash /entrypoint.sh
           mkdir -p /etc/keepalived
-          bash /generate-keepalived-config.sh > /etc/keepalived/keepalived.conf
+          /bin/bash /generate-keepalived-config.sh > /etc/keepalived/keepalived.conf
           exec keepalived -nlGdPD
         env:
         {{- if $.Values.configuration }}
