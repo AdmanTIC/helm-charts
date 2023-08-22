@@ -22,9 +22,9 @@ spec:
         - /bin/sh
         - -exc
         - |
-          sh /root/bin/init.sh
+          sh /entrypoint.sh
           mkdir -p /etc/keepalived
-          bash /root/bin/generate-keepalived-config.sh > /etc/keepalived/keepalived.conf
+          bash /generate-keepalived-config.sh > /etc/keepalived/keepalived.conf
           exec keepalived -nlGdPD
         env:
         {{- if $.Values.configuration }}
