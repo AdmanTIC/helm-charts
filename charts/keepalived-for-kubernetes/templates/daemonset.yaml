@@ -39,8 +39,10 @@ spec:
           value: "{{ tpl $v $ }}"
 {{- end }}
 {{- end }}
+        {{- with $.Values.resources }}
         resources:
-          {{- toYaml $.Values.resources | nindent 12 }}
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         securityContext:
           capabilities:
             add:
@@ -52,5 +54,8 @@ spec:
       hostNetwork: true
       securityContext: {}
       terminationGracePeriodSeconds: 5
-      tolerations: []
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       volumes: []
