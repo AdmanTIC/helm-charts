@@ -33,10 +33,13 @@ data:
       $output = null;
       $secret_matched = false;
 
-      [$secret, $type, $namespace, $name] = explode(' ', $row);
+      [$secret, $type, $namespace, $name] = explode(' ', trim($row));
       if ($secret == $provided_secret) {
         $secret_matched = true;
-        exec("$kubectl_bin $kubectl_extra_args rollout restart -n $namespace $type $name", $output, $rc);
+        $kubectl_cmd = "$kubectl_bin $kubectl_extra_args rollout restart -n $namespace $type $name";
+        error_log("Running: $kubectl_cmd");
+        exec($kubectl_cmd, $output, $rc);
+        error_log("Output: " . implode("\n", $output));
         if ($rc === 0) {
           http_response_code(200);
           exit;
