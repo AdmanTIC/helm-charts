@@ -1,0 +1,61 @@
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    {{- include "chart_labels" $ | nindent 4 }}
+  name: {{ include "short_name" $ }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "chart_labels" $ | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "chart_labels" $ | nindent 8 }}
+    spec:
+      containers:
+      - name: keepalived
+        image: "{{ $.Values.image.registry }}/{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+        imagePullPolicy: {{ default "IfNotPresent" $.Values.image.imagePullPolicy }}
+        env:
+        {{- if $.Values.configuration }}
+        {{- $last := int (len $.Values.configuration ) }}
+        - name: VRRP_PEER_GROUPS
+          value: {{ range $i, $e := until $last -}}
+              {{- join " " (index $.Values.configuration $i).node_ips -}}
+              {{- if (index $.Values.configuration $i).vips -}};{{- end -}}
+              {{- join " " (index $.Values.configuration $i).vips -}}
+              {{- if (index $.Values.configuration $i).gw -}},{{- end -}}
+              {{- (index $.Values.configuration $i).gw -}}
+              {{- if ne $i (sub $last 1) -}}|{{- end -}}
+            {{- end }}
+        {{- end }}
+        - name: VRRP_PASS
+          value: "{{ $.Values.auth.password }}"
+{{- with .Values.extraEnvVars }}
+{{- range $k, $v := . }}
+        - name: "{{ $k }}"
+          value: "{{ tpl $v $ }}"
+{{- end }}
+{{- end }}
+        {{- with $.Values.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        securityContext:
+          capabilities:
+            add:
+            - NET_ADMIN
+            - NET_BROADCAST
+            - NET_RAW
+        volumeMounts: []
+      dnsPolicy: ClusterFirst
+      hostNetwork: true
+      securityContext: {}
+      terminationGracePeriodSeconds: 5
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes: []
