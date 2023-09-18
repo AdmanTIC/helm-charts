@@ -14,6 +14,28 @@ spec:
       labels:
         {{- include "chart_labels" $ | nindent 8 }}
     spec:
+      {{- with $.Values.initCommand }}
+      initContainers:
+      - name: init
+        image: "{{ $.Values.image.registry }}/{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+        imagePullPolicy: {{ default "IfNotPresent" $.Values.image.imagePullPolicy }}
+        command:
+        - /bin/bash
+        - -exc
+        - |
+          {{- nindent 10 . }}
+        {{- with $.Values.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        securityContext:
+          capabilities:
+            add:
+            - NET_ADMIN
+            - NET_BROADCAST
+            - NET_RAW
+        volumeMounts: []
+      {{- end }}
       containers:
       - name: keepalived
         image: "{{ $.Values.image.registry }}/{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
