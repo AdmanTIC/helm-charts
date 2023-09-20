@@ -3,7 +3,7 @@ image:
   imagePullSecrets: []
   registry: docker.io
   repository: admantic/keepalived-for-kubernetes
-  tag: "v0.5"
+  tag: "v0.6"
   imagePullPolicy: IfNotPresent
 
 auth:
@@ -15,6 +15,9 @@ configuration:
     gw: ""
 
 extraEnvVars: {}
+  # CHK_ALLOWED_HTTP_CODES: 200,201,202,301,302,303,401,403,404
+  # CHK_URI: /
+  # CHK_PORT: "443"
 
 resources:
   limits:
