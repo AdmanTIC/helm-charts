@@ -1,0 +1,110 @@
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    {{- include "chart_labels" $ | nindent 4 }}
+  name: {{ include "short_name" $ }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "chart_labels" $ | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "chart_labels" $ | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - name: node-exporter
+        image: "{{ (index $.Values (base (dir $.Template.Name))).image.registry }}/{{ (index $.Values (base (dir $.Template.Name))).image.repository }}:{{ (index $.Values (base (dir $.Template.Name))).image.tag }}"
+        imagePullPolicy: {{ default "IfNotPresent" (index $.Values (base (dir $.Template.Name))).image.imagePullPolicy }}
+        args:
+        - --path.procfs=/host/proc
+        - --path.sysfs=/host/sys
+        - --path.rootfs=/host/root
+        - --path.udev.data=/host/root/run/udev/data
+        - --web.listen-address=[$(HOST_IP)]:{{ (index $.Values (base (dir $.Template.Name))).port }}
+        - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/kubelet/.+)($|/)
+        - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$
+      
+        env:
+        - name: HOST_IP
+          value: 0.0.0.0
+        {{- with (index $.Values (base (dir $.Template.Name))).extraEnvVars }}
+        {{- range $k, $v := . }}
+        - name: "{{ $k }}"
+          value: "{{ tpl $v $ }}"
+        {{- end }}
+        {{- end }}
+
+        ports:
+        - containerPort: {{ (index $.Values (base (dir $.Template.Name))).port }}
+          hostPort: {{ (index $.Values (base (dir $.Template.Name))).port }}
+          name: http-metrics
+          protocol: TCP
+
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /
+            port: {{ (index $.Values (base (dir $.Template.Name))).port }}
+            scheme: HTTP
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /
+            port: {{ (index $.Values (base (dir $.Template.Name))).port }}
+            scheme: HTTP
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+
+        {{- with (index $.Values (base (dir $.Template.Name))).resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+
+        volumeMounts:
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: sys
+          mountPath: /host/sys
+          readOnly: true
+        - name: root
+          mountPath: /host/root
+          mountPropagation: HostToContainer
+          readOnly: true
+
+      dnsPolicy: ClusterFirst
+      hostNetwork: true
+      securityContext:
+        fsGroup: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+        runAsUser: 65534
+      terminationGracePeriodSeconds: 30
+      {{- with (index $.Values (base (dir $.Template.Name))).tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      serviceAccount: {{ include "short_name" $ }}
+      serviceAccountName: {{ include "short_name" $ }}
+      volumes:
+      - name: proc
+        hostPath:
+          path: /proc
+          type: ""
+      - name: sys
+        hostPath:
+          path: /sys
+          type: ""
+      - name: root
+        hostPath:
+          path: /
+          type: ""

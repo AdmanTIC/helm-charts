@@ -1,0 +1,22 @@
+---
+shinken-agent:
+  image:
+    imagePullSecrets: []
+    registry: docker.io
+    repository: admantic/
+    tag: ""
+    imagePullPolicy: IfNotPresent
+
+node-exporter:
+  image:
+    imagePullSecrets: []
+    registry: quay.io
+    repository: prometheus/node-exporter
+    tag: v1.5.0
+    imagePullPolicy: IfNotPresent
+  extraEnvVars: {}
+  port: 9100
+  resources: {}
+  tolerations:
+  - effect: NoSchedule
+    operator: Exists
