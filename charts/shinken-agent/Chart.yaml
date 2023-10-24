@@ -1,6 +1,0 @@
----
-apiVersion: v2
-name: shinken-agent
-description: A Shinken agent Helm Chart for Kubernetes nodes
-type: application
-version: 0.0.1

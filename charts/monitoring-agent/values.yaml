@@ -1,5 +1,5 @@
 ---
-shinken-agent:
+monitoring-agent:
   image:
     imagePullSecrets: []
     registry: docker.io
