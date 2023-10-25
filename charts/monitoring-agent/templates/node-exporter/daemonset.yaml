@@ -2,9 +2,9 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
+  name: {{ include "short_name" $ }}
   labels:
     {{- include "chart_labels" $ | nindent 4 }}
-  name: {{ include "short_name" $ }}
 spec:
   selector:
     matchLabels:
@@ -14,6 +14,10 @@ spec:
       labels:
         {{- include "chart_labels" $ | nindent 8 }}
     spec:
+      {{- with (index $.Values (base (dir $.Template.Name))).image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       automountServiceAccountToken: false
       containers:
       - name: node-exporter
@@ -93,8 +97,8 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
 
-      serviceAccount: {{ include "short_name" $ }}
-      serviceAccountName: {{ include "short_name" $ }}
+      serviceAccount: {{ $.Release.Name }}
+      serviceAccountName: {{ $.Release.Name }}
       volumes:
       - name: proc
         hostPath:

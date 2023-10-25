@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "short_name" $ }}
+  labels:
+    {{- include "chart_labels" $ | nindent 4 }}
+spec:
+  replicas: {{ (index $.Values (base (dir $.Template.Name))).replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "chart_labels" $ | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "chart_labels" $ | nindent 8 }}
+    spec:
+      {{- with (index $.Values (base (dir $.Template.Name))).image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: agent
+          image: "{{ (index $.Values (base (dir $.Template.Name))).image.repository }}:{{ (index $.Values (base (dir $.Template.Name))).image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ (index $.Values (base (dir $.Template.Name))).image.pullPolicy }}
+          {{- with (index $.Values (base (dir $.Template.Name))).readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with (index $.Values (base (dir $.Template.Name))).livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with (index $.Values (base (dir $.Template.Name))).resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts: []
+
+      {{- with (index $.Values (base (dir $.Template.Name))).tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      serviceAccount: {{ $.Release.Name }}
+      serviceAccountName: {{ $.Release.Name }}
+
+      volumes: []

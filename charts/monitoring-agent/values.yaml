@@ -1,11 +1,16 @@
 ---
 monitoring-agent:
+  replicaCount: 1
   image:
     imagePullSecrets: []
     registry: docker.io
     repository: admantic/
     tag: ""
     imagePullPolicy: IfNotPresent
+  tolerations: []
+  resources: {} 
+  livenessProbe: {}
+  readinessProbe: {}
 
 node-exporter:
   image:
