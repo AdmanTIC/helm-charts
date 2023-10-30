@@ -20,7 +20,12 @@ data:
     }
 
     if (! isset($_GET['shared_secret']) || ! $_GET['shared_secret']) {
-      http_response_code(200);
+      exec("/run/apache2/kubectl | grep -q .", $output, $rc);
+      if ($rc === 0) {
+        http_response_code(200);
+      } else {
+        http_response_code(500);
+      }
       exit;
     }
 
