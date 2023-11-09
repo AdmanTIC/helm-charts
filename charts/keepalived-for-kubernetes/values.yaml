@@ -1,0 +1,37 @@
+---
+image:
+  imagePullSecrets: []
+  registry: docker.io
+  repository: admantic/keepalived-for-kubernetes
+  tag: "v0.6"
+  imagePullPolicy: IfNotPresent
+
+auth:
+  password: ""
+
+configuration:
+  - node_ips: []
+    vips: []
+    gw: ""
+
+extraEnvVars: {}
+  # CHK_ALLOWED_HTTP_CODES: 200,201,202,301,302,303,401,403,404
+  # CHK_URI: /
+  # CHK_PORT: "443"
+
+resources:
+  limits:
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+initCommand: ~
+
+tolerations:
+  - effect: NoSchedule
+    operator: Exists
+  - key: CriticalAddonsOnly
+    operator: Exists
+  - effect: NoExecute
+    operator: Exists

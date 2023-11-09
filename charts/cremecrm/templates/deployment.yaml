@@ -1,0 +1,118 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "short_name" $ }}
+  labels:
+    {{- include "chart_labels" $ | nindent 4 }}
+
+  {{- if or $.Values.annotations $.Values.global.commonAnnotations }}
+  annotations:
+    {{- if  $.Values.annotations }}
+    {{- $.Values.annotations | toYaml | nindent 4 }}
+    {{- end }}
+    {{- if $.Values.global.commonAnnotations }}
+    {{- $.Values.global.commonAnnotations | toYaml | nindent 4 }}
+    {{- end }}
+  {{- end }}
+
+spec:
+  replicas: {{ $.Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "chart_labels" $ | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "chart_labels" $ | nindent 8 }}
+
+      annotations:
+        checksum/configmap: {{ include (print $.Template.BasePath "/configmap.yaml") $ | sha256sum }}
+        {{- if  $.Values.podAnnotations }}
+        {{- $.Values.podAnnotations | toYaml | nindent 8 }}
+        {{- end }}
+        {{- if $.Values.global.commonAnnotations }}
+        {{- $.Values.global.commonAnnotations | toYaml | nindent 8 }}
+        {{- end }}
+
+    spec:
+      terminationGracePeriodSeconds: 0
+      {{- if $.Values.securityContext }}
+      securityContext:
+        {{- $.Values.securityContext | toYaml | nindent 8 }}
+      {{- end }}
+
+      {{- if or $.Values.image.imagePullSecrets $.Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range $.Values.global.imagePullSecrets }}
+        - name: {{ . | quote }}
+        {{- end }}
+        {{- range $.Values.image.imagePullSecrets }}
+        - name: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+
+      initContainers:
+        - name: chmod
+          image: busybox:latest
+          imagePullPolicy: Always
+          command:
+            - /bin/chown
+            - '1001:'
+            - /srv/creme/data
+          volumeMounts:
+            - mountPath: /srv/creme/data
+              name: data
+
+      containers:
+        - name: cremecrm
+          image: "{{ $.Values.image.registry }}/{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ default "IfNotPresent" $.Values.image.imagePullPolicy }}
+          
+          {{- if $.Values.command }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              {{- $.Values.command | nindent 14 }}
+          {{- end }}
+
+          envFrom:
+            - configMapRef:
+                name: {{ include "short_name" $ }}-env-vars
+
+          ports:
+            - name: cremecrm
+              containerPort: {{ $.Values.containerPort }}
+              protocol: TCP
+
+          {{- with $.Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+
+          {{- with $.Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+
+          {{- with $.Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+
+          resources:
+            {{- toYaml $.Values.resources | nindent 12 }}
+
+          {{- if $.Values.persistence.enabled }}
+          volumeMounts:
+            - name: data
+              mountPath: /srv/creme/data
+          {{- end }}
+
+      {{- if $.Values.persistence.enabled }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "short_name" $ }}
+      {{- end }}
