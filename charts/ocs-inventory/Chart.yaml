@@ -1,0 +1,13 @@
+apiVersion: v2
+name: ocs-inventory
+description: A Helm chart for OCS-inventory
+type: application
+version: 0.1.0
+
+dependencies:
+
+
+  - name: mariadb
+    version: "14.1.0"
+    repository: https://charts.bitnami.com/bitnami
+    condition: mariadb.enabled

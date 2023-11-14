@@ -1,0 +1,182 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "short_name" $ }}
+  labels:
+    {{- include "chart_labels" $ | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "chart_labels" $ | nindent 6 }}
+  template:
+    metadata:
+      {{- if or .Values.podAnnotations $.Values.global.commonAnnotations }}
+      annotations:
+        {{- if  .Values.podAnnotations }}
+        {{- .Values.podAnnotations | toYaml | nindent 8 }}
+        {{- end }}
+        {{- if $.Values.global.commonAnnotations }}
+        {{- $.Values.global.commonAnnotations | toYaml | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      labels:
+        {{- include "chart_labels" $ | nindent 8 }}
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- if .Values.podSecurityContext }}
+      securityContext:
+        {{- .Values.podSecurityContext | toYaml | nindent 8 }}
+      {{- end }}
+
+      {{- if $.Values.serviceAccount.create }}
+      serviceAccountName: {{ $.Release.Name }}
+      {{- end }}
+
+      {{- if or .Values.image.imagePullSecrets $.Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range $.Values.global.imagePullSecrets }}
+        - name: {{ . | quote }}
+        {{- end }}
+        {{- range .Values.image.imagePullSecrets }}
+        - name: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.initCommand }}
+      initContainers:
+        - name: wait-for-mariadb
+          {{- if .Values.containerSecurityContext }}
+          securityContext:
+            {{- .Values.containerSecurityContext | toYaml | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.imagePullPolicy | default "IfNotPresent" }}
+          command:
+          - "sh"
+          - "-c"
+          - |
+            until mysql -u $MARIADB_USER -p$MARIADB_PASSWORD -h $MARIADB_SVC -e "SELECT 1" &> /dev/null; do
+              sleep 1
+            done
+            {{ .Values.initCommand }}  
+
+          {{- with .Values.secretData }}
+          envFrom:
+            - secretRef:
+                name: {{ include "short_name" $ }}
+                optional: false
+          {{- end }}
+          env:
+          {{- with .Values.initExtraEnvVars }}
+          {{- range $k, $v := . }}
+            - name: "{{ $k }}"
+              value: "{{ tpl $v $ }}"
+          {{- end }}
+          {{- end }}
+          {{- end }}
+      containers:
+        - name: {{ include "short_name" $ }}
+          {{- if .Values.containerSecurityContext }}
+          securityContext:
+            {{- .Values.containerSecurityContext | toYaml | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.imagePullPolicy | default "IfNotPresent" }}
+          {{- with .Values.command }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              {{- . | nindent 14 }}
+          {{- end }}
+
+          {{- with .Values.secretData }}
+          envFrom:
+            - secretRef:
+                name: {{ include "short_name" $ }}
+                optional: false
+          {{- end }}
+          env:
+            - name: OCS_DB_SERVER
+              value: {{ include "mariadb.primary.fullname" .Subcharts.mariadb }}
+            - name: OCS_DB_USER
+              value: {{ .Values.mariadb.auth.username }}
+            - name: OCS_DB_PASS
+              value: {{ .Values.mariadb.auth.password }}
+            - name: OCS_DB_NAME
+              value: {{ .Values.mariadb.auth.database }}
+          {{- with .Values.extraEnvVars }}
+          {{- range $k, $v := . }}
+            - name: "{{ $k }}"
+              value: "{{ tpl $v $ }}"
+          {{- end }}
+          {{- end }}
+
+          ports:
+            - name: app
+              containerPort: {{ .Values.ports.containerPort }}
+              protocol: {{ .Values.ports.protocol }}
+
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+
+          {{- if or .Values.extraConfigMaps .Values.extraVolumes }}
+          volumeMounts:
+          {{- range .Values.extraConfigMaps }}
+            - name: {{ .name }}
+              mountPath: {{ dir .mountPath }}
+              {{- if .readOnly }}
+              readOnly: {{ .readOnly }}
+              {{- end }}
+          {{- end }}
+
+          {{- range .Values.extraVolumes }}
+            - name: {{ .name }}
+              mountPath: {{ .mountPath }}
+          {{- end }}
+          {{- end }}
+
+      {{- if or .Values.extraConfigMaps .Values.extraVolumes }}
+      volumes:
+      {{- range .Values.extraConfigMaps }}
+        - name: {{ .name }}
+          configMap:
+            {{- if .mode }}
+            defaultMode: {{ .mode }}
+            {{- end }}
+            name: {{ include "short_name" $ }}-{{ .name }}
+      {{- end }}
+
+      {{- range .Values.extraVolumes }}
+        - name: {{ .name }}
+          persistentVolumeClaim:
+            claimName: {{ include "short_name" $ }}-{{ .name }}
+      {{- end }}
+      {{- end }}

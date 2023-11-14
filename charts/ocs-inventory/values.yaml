@@ -1,0 +1,81 @@
+serviceAccount:
+  create: false
+  annotations: {}
+
+global:
+  commonAnnotations: {}
+  imagePullSecrets: []
+  secrets: []
+  # - name: gitlab
+  #   registry: gitlab-registry
+  #   username:
+  #   password:
+  #   type: kubernetes.io/dockerconfigjson
+
+
+image:
+  imagePullSecrets: []
+  imagePullPolicy: "IfNotPresent"
+  registry: "ocsinventory"
+  repository: "ocsinventory-docker-image"
+  tag: "2.9.2"
+podAnnotations: {}
+replicas: 1
+nodeSelector: {}
+affinity: {}
+tolerations: {}
+podSecurityContext: {}
+containerSecurityContext: {}
+livenessProbe: {}
+readinessProbe: {}
+ports:
+  name: http
+  containerPort: 80
+  protocol: TCP
+initCommand: 
+initExtraEnvVars:
+command: []
+resources: {}
+service:
+  annotations: {}
+  type: ClusterIP
+port: ~
+ingress:
+  enabled: false
+  annotations:
+    kubernetes.io/tls-acme: "true"
+  ingressClassName: nginx
+  pathType: ImplementationSpecific
+  hostname: ""
+  path: /
+  tls: true
+  extraHosts: []
+
+extraConfigMaps:
+extraVolumes: []
+secretData: {}
+# password: ""
+extraEnvVars:
+
+
+# https://artifacthub.io/packages/helm/bitnami/mariadb?modal=values
+
+
+
+mariadb:
+  enabled: true
+  auth:
+    database: ""
+    password: ""
+    username: ""
+    rootPassword: ""
+  primary:
+    persistence:
+      enabled: true
+      storageClass: ""
+      accesModes:
+        - ReadWriteOnce
+      size: 1Gi
+    extraEnvVars:
+    - name: "TZ"
+      value: "Europe/Paris"

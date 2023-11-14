@@ -1,0 +1,24 @@
+{{- if .Values.extraVolumes }}
+{{- range .Values.extraVolumes }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "short_name" $ }}-{{ .name }}
+  labels:
+    {{- include "chart_labels" $ | nindent 4 }}
+  {{- if $.Values.global.commonAnnotations }}
+  annotations:
+  {{- if $.Values.global.commonAnnotations }}
+    {{- $.Values.global.commonAnnotations | toYaml | nindent 4 }}
+  {{- end }}
+  {{- end }}
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .persistence.size }}
+  storageClassName: {{ .persistence.storageClass }}
+{{- end }}
+{{- end }}

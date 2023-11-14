@@ -1,0 +1,61 @@
+---
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "short_name" $ }}
+  labels:
+    {{- include "chart_labels" $ | nindent 4 }}
+  {{- if or .Values.ingress.annotations $.Values.global.commonAnnotations }}
+  annotations:
+    {{- if  .Values.ingress.annotations }}
+    {{- .Values.ingress.annotations | toYaml | nindent 4 }}
+    {{- end }}
+    {{- if $.Values.global.commonAnnotations }}
+    {{- $.Values.global.commonAnnotations | toYaml | nindent 8 }}
+    {{- end }}
+  {{- end }}
+
+spec:
+  ingressClassName: {{ .Values.ingress.ingressClassName | quote }}
+
+  tls:
+    - hosts:
+        - {{ .Values.ingress.hostname }}
+      secretName: {{ regexReplaceAll "\\W+" .Values.ingress.hostname "-" }}-tls
+
+    {{- with .Values.ingress.extraHosts }}
+    {{- range . }}
+    - hosts:
+        - {{ .hostname }}
+      secretName: {{ regexReplaceAll "\\W+" .hostname "-" }}-tls
+    {{- end }}
+    {{- end }}
+
+  rules:
+    - host: {{ .Values.ingress.hostname }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "short_name" $ }}
+                port:
+                  name: app
+  {{- with .Values.ingress.extraHosts }}
+  {{- range . }}
+    - host: {{ .hostname }}
+      http:
+        paths:
+          - path: {{ .path }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "short_name" $ }}
+                port:
+                  name: app
+  {{- end }}
+  {{- end }}
+
+{{- end }}
