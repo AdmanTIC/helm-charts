@@ -26,8 +26,30 @@ affinity: {}
 tolerations: {}
 podSecurityContext: {}
 containerSecurityContext: {}
-livenessProbe: {}
-readinessProbe: {}
+livenessProbe:
+  timeoutSeconds: 5
+  successThreshold: 1
+  failureThreshold: 3
+  initialDelaySeconds: 2
+  periodSeconds: 5
+  httpGet:
+    path: /
+    port: http
+readinessProbe:
+  timeoutSeconds: 10
+  successThreshold: 1
+  failureThreshold: 3
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  httpGet:
+    path: /
+    port: http
+startupProbe:
+  failureThreshold: 60
+  periodSeconds: 10
+  httpGet:
+    path: /
+    port: http
 ports:
   name: http
   containerPort: 80
