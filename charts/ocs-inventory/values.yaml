@@ -69,7 +69,7 @@ ingress:
   ingressClassName: nginx
   pathType: ImplementationSpecific
   hostname: ""
-  path: /
+  path: /ocsreports
   tls: true
   extraHosts: []
 
