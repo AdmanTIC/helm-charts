@@ -166,7 +166,6 @@ spec:
             - name: {{ .name }}
               mountPath: {{ .mountPath }}
           {{- end }}
-          {{- end }}
 
       {{- if or .Values.extraConfigMaps .Values.extraVolumes }}
       volumes:
