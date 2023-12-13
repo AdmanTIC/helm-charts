@@ -1,0 +1,6 @@
+---
+apiVersion: v2
+name: rbac-ns-manager
+description: Chart Helm to create a full-access SA in a given namespace in K8s cluster
+type: application
+version: 0.0.1

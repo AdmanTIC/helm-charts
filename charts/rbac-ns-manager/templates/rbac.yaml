@@ -1,0 +1,37 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  annotations:
+    helm.sh/hook-weight: "30"
+  name: namespace-admin
+  namespace: "{{ $.Release.Namespace }}"
+rules:
+- apiGroups:
+  - '*'
+  resources:
+  - '*'
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  annotations:
+    helm.sh/hook-weight: "40"
+  name: "{{ $.Release.Name }}:namespace-admin"
+  namespace: "{{ $.Release.Namespace }}"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: namespace-admin
+subjects:
+- kind: ServiceAccount
+  name: "{{ $.Release.Name }}"
+  namespace: "{{ $.Release.Namespace }}"
