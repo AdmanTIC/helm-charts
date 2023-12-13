@@ -22,6 +22,14 @@ spec:
         - name: agent
           image: "{{ (index $.Values (base (dir $.Template.Name))).image.repository }}:{{ (index $.Values (base (dir $.Template.Name))).image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ (index $.Values (base (dir $.Template.Name))).image.pullPolicy }}
+          {{- with (index $.Values (base (dir $.Template.Name))).command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with (index $.Values (base (dir $.Template.Name))).args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- with (index $.Values (base (dir $.Template.Name))).readinessProbe }}
           readinessProbe:
             {{- toYaml . | nindent 12 }}

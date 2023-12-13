@@ -11,6 +11,18 @@ monitoring-agent:
   resources: {} 
   livenessProbe: {}
   readinessProbe: {}
+  # command: []
+  # args: []
+
+  command:
+    - /bin/bash
+  args:
+    - '-c'
+    - |
+      while true; do
+        base64 -d <<<"{{ lookup('template', 'shinken-agent.sh') | b64encode }}" | bash ;
+        sleep 60 ;
+      done
 
 node-exporter:
   image:
