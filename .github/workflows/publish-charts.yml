@@ -1,0 +1,35 @@
+name: Publish Charts
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+
+  publish:
+
+    runs-on: ubuntu-latest
+    container: dtzar/helm-kubectl:3.2.1
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Requirements and Chartmuseum repo. authentication
+      run: |
+        helm plugin install --version v0.9.0 https://github.com/chartmuseum/helm-push.git
+        helm repo add chartmuseum https://chartmuseum.admantic.fr --username ${{ secrets.REPO_USER }} --password ${{ secrets.REPO_PASSWORD }}
+
+    - name: Package Charts
+      run: |
+        set -ex
+        rm -rf packaged-charts
+        mkdir packaged-charts
+        for CHART in charts/*/ ;
+        do
+          helm package -d packaged-charts $CHART ;
+        done;
+
+    - name: Push to Chartmuseum
+      run: |
+        set -ex
+        for CHART in packaged-charts/* ; do helm push --force $CHART chartmuseum ; done
