@@ -1,5 +1,6 @@
 ---
 image: cmulk/wireguard-docker:alpine
+priorityClassName: ''
 persistence:
   size: 100Mi
   storageClass:

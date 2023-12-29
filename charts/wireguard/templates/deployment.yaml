@@ -16,7 +16,10 @@ spec:
       labels:
         {{- include "chart_labels" $ | nindent 8 }}
     spec:
-      {{- with .Values.nodeSelector }}
+      {{- with $.Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with $.Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
