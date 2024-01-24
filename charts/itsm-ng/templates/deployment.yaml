@@ -37,8 +37,10 @@ spec:
               containerPort: 80
               protocol: TCP
           volumeMounts:
-            - name: data
-              mountPath: /var/www/html/files
+          {{- range .Values.volumeMounts }}
+            - name: {{ .name }}
+              mountPath: {{ .mountPath }}
+          {{- end }}
           livenessProbe:
             timeoutSeconds: 5
             successThreshold: 1
