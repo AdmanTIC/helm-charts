@@ -76,6 +76,22 @@ spec:
             value: {{ include "mariadb.primary.fullname" .Subcharts.mariadb }}
           - name: ITSM_ADMIN_PASSWORD
             value: {{ .Values.auth.adminPassword }}
+          - name: MAIN_USER_LOGIN
+            value: {{ .Values.auth.mainUserOidcLogin }}
+          - name: MAIN_USER_PASSWORD
+            value: ""
+          - name: OIDC_PROVIDER
+            value: {{ .Values.oidc.provider }}
+          - name: OIDC_CLIENTID
+            value: {{ .Values.oidc.clientId }}
+          - name: OIDC_CLIENTSECRET
+            value: {{ .Values.oidc.clientSecret }}
+          - name: OIDC_GIVEN_NAME
+            value: {{ .Values.oidc.mapping.givenName }}
+          - name: OIDC_FAMILY_NAME
+            value: {{ .Values.oidc.mapping.familyName }}
+          - name: OIDC_EMAIL
+            value: {{ .Values.oidc.mapping.email }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
