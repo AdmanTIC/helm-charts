@@ -87,11 +87,6 @@ persistence:
   size: 1G
   storageClass: ""
 
-volumeMounts:
-  - name: data
-    mountPath: /var/www/html/files
-  - name: plugins
-    mountPath: /var/www/html/plugins
 
 mariadb:
   auth: 
