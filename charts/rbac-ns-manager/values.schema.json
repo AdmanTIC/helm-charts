@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": [
+    "publicApiURL"
+  ],
+  "properties": {
+    "publicApiURL": {
+      "type": "string",
+      "pattern": "^https?://[a-z0-9-./]+:?[0-9]*$"
+    }
+  }
+}

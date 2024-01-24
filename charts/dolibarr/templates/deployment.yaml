@@ -96,6 +96,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/www/documents
+              subPath: documents
+            - name: data
+              mountPath: /var/www/html/custom
+              subPath: modules
           {{- end }}
 
       {{- if $.Values.persistence.enabled }}

@@ -28,7 +28,7 @@ image:
   imagePullSecrets: []
   registry: docker.io
   repository: tuxgasy/dolibarr
-  tag: "16.0.3"
+  tag: "18.0.4"
   imagePullPolicy: IfNotPresent
 command: ""
 containerPort: 80

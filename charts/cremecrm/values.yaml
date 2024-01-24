@@ -1,0 +1,76 @@
+---
+global:
+  commonAnnotations: {}
+  imagePullSecrets: []
+
+auth:
+  adminUser: ""
+  adminPassword: ""
+
+persistence:
+  enabled: false
+  storageClass: ""
+  size: ""
+  labels: {}
+  annotations: {}
+
+service:
+  type: ClusterIP
+  port: 80
+  clusterIP: ""
+  annotations: {}
+
+annotations: {}
+podAnnotations: {}
+replicas: 1
+securityContext: {}
+image:
+  imagePullSecrets: []
+  registry: docker.io
+  repository: cremecrm/cremecrm-demo
+  tag: "2.3.2"
+  imagePullPolicy: IfNotPresent
+command: |
+  sed -e 's/^http=.*/http=0.0.0.0:8080/' -i /srv/creme/uwsgi.ini
+  creme migrate
+  creme check
+  exec supervisord --configuration /srv/creme/supervisord.conf
+containerPort: 8080
+livenessProbe: {}
+startupProbe: {}
+readinessProbe: {}
+resources: {}
+extraEnvVars:
+  CREME_DEBUG: "1"
+  CREME_DATABASE_ENGINE: "django.db.backends.postgresql"
+  CREME_DATABASE_NAME: "{{ .Values.postgresql.global.postgresql.auth.database }}"
+  CREME_DATABASE_HOST: "{{ .Release.Name }}-postgresql-hl.{{ .Release.Namespace }}.svc.cluster.local"
+  CREME_DATABASE_USER: "{{ .Values.postgresql.global.postgresql.auth.username }}"
+  CREME_DATABASE_PASSWORD: "{{ .Values.postgresql.global.postgresql.auth.password }}"
+  CREME_LANGUAGE_CODE: "fr"
+  CREME_TIME_ZONE: "Europe/Paris"
+
+ingress:
+  enabled: false
+  pathType: ImplementationSpecific
+  hostname: ""
+  path: /
+  annotations:
+    kubernetes.io/tls-acme: "true"
+  ingressClassName: nginx
+  tls: true
+  extraHosts: []
+
+postgresql:
+  enabled: true
+  global:
+    postgresql:
+      auth:
+        postgresPassword: ""
+        username: ""
+        password: ""
+        database: ""
+  primary:
+    persistence:
+      size: 5G
+      storageClass: ""

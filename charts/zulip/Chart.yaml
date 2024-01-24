@@ -1,17 +1,33 @@
-name: zulip
-description: A chart Helm for Zulip, open source group chat application
-version: 0.4.8-1
 apiVersion: v2
-icon: https://github.com/zulip/zulip/raw/master/static/images/logo/zulip-icon-512x512.png
+appVersion: 7.0-0
 dependencies:
-  - name: redis
-    version: "12.8.3"
-    repository: "https://charts.bitnami.com/bitnami"
-
-  - name: memcached
-    version: "5.6.0"
-    repository: "https://charts.bitnami.com/bitnami"
-
-  - name: rabbitmq
-    version: "8.11.3"
-    repository: "https://charts.bitnami.com/bitnami"
+- name: memcached
+  repository: https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami
+  tags:
+  - memcached
+  version: 6.0.16
+- name: rabbitmq
+  repository: https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami
+  tags:
+  - rabbitmq
+  version: 8.32.0
+- name: redis
+  repository: https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami
+  tags:
+  - redis
+  version: 16.8.7
+- name: postgresql
+  repository: https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami
+  tags:
+  - postgresql
+  version: 11.1.22
+description: Zulip is an open source threaded team chat that helps teams stay productive
+  and focused.
+icon: https://raw.githubusercontent.com/zulip/zulip/main/static/images/logo/zulip-icon-square.svg
+name: zulip
+sources:
+- https://github.com/zulip/zulip
+- https://github.com/zulip/docker-zulip
+- https://hub.docker.com/r/zulip/docker-zulip
+type: application
+version: 0.7.0

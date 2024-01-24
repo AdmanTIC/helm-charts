@@ -1,2 +1,4 @@
-packaged-charts
+/packaged-charts
 *dev*
+/tmp
+/build-zulip-chart-from-upstream.sh
