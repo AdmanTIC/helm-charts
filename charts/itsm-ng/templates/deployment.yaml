@@ -38,7 +38,8 @@ spec:
             - >
               set -e -o pipefail ;
               echo '* * * * * cd /var/www/html/front/ && /usr/local/bin/php cron.php &>/dev/null' > /var/spool/cron/crontabs/www-data ;
-              cron 
+              cron ;
+              /init.sh
           ports:
             - name: http
               containerPort: 80
