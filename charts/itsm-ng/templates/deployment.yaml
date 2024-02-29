@@ -26,6 +26,18 @@ spec:
       serviceAccountName: {{ include "itsm-ng.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+
+
+      initContainers:
+        - name: glpicryptkey-init
+          image: alpine:3.19.1
+          command: ['sh', '-c', 'mkdir -p /var/www/html/config ; touch /var/www/html/config/glpicrypt.key']
+          volumeMounts:
+            - name: data
+              mountPath: /var/www/html/config/
+              subPath: config
+
+
       containers:
         - name: {{ .Chart.Name }}
           securityContext:
@@ -43,6 +55,9 @@ spec:
             - name: data
               mountPath: /var/www/html/plugins
               subPath: plugins
+            - name: data
+              mountPath: /var/www/html/config/glpicrypt.key
+              subPath: config/glpicrypt.key
           livenessProbe:
             timeoutSeconds: 5
             successThreshold: 1
