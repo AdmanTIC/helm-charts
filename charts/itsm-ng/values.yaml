@@ -6,7 +6,7 @@ image:
   repository: admantic/itsm-ng
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "1.3.0-005"
+  tag: "1.6.0-001"
 
 imagePullSecrets: []
 nameOverride: ""
