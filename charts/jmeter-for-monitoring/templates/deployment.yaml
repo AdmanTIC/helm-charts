@@ -5,9 +5,7 @@ metadata:
   labels:
     {{- include "jmeter.labels" . | nindent 4 }}
 spec:
-  {{- if not .Values.autoscaling.enabled }}
-  replicas: {{ .Values.replicaCount }}
-  {{- end }}
+  replicas: 1
   selector:
     matchLabels:
       {{- include "jmeter.selectorLabels" . | nindent 6 }}
@@ -27,7 +25,6 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "jmeter.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -45,10 +42,6 @@ spec:
             - |
               curl {{ .Values.jmxURL }} -s -o "jmxfile.jmx"
               jmeter -n -t jmxfile.jmx  {{ range $key, $value := .Values.properties }} {{ $key }}={{ $value }}{{ end }}
-          livenessProbe:
-            {{- toYaml .Values.livenessProbe | nindent 12 }}
-          readinessProbe:
-            {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           {{- with .Values.volumeMounts }}
