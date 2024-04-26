@@ -5,10 +5,10 @@
 replicaCount: 1
 
 image:
-  repository: ""
+  repository: "docker.io/admantic/jmeter-for-monitoring/jmeter-monitoring"
   pullPolicy: IfNotPresent
 
-  tag: ""
+  tag: "latest"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -27,14 +27,8 @@ securityContext: {}
 resources: {}
 
 
-livenessProbe:
-  httpGet:
-    path: /
-    port: http
-readinessProbe:
-  httpGet:
-    path: /
-    port: http
+livenessProbe: {}
+readinessProbe: {}
 
 autoscaling:
   enabled: false
@@ -49,8 +43,7 @@ tolerations: []
 
 affinity: {}
 
-
 jmxURL: ""
-properties:
-#  -Jthread_users: 3
-#  -Jthread_iterations: 10
+args: []
+#  - -JapiFqdn: api.test.com
+#  - -JapiPath: /api/v1/testRoute
