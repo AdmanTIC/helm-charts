@@ -1,7 +1,8 @@
 image:
   repository: "docker.io/admantic/jmeter-for-monitoring/jmeter-monitoring"
   pullPolicy: IfNotPresent
-  tag: 0.1.0
+  tag: 5.6.3-0.1.0
+
 
 imagePullSecrets: []
 nameOverride: ""
