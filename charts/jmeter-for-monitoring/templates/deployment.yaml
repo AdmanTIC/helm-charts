@@ -33,6 +33,16 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: JMX_URL
+              value: "{{ .Values.jmxURL}}"
+{{- with .Values.extraEnv }}
+{{- range $k, $v := . }}
+            - name: "{{ $k }}"
+              value: "{{ tpl $v $ }}"
+{{- end }}
+{{- end }}
+
           args:
             {{- toYaml .Values.args | nindent 12 }}
           resources:
