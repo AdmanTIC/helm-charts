@@ -9,14 +9,127 @@ data:
   index.php: |
     <?php
 
-    $kubectl_url = "https://storage.googleapis.com/kubernetes-release/release/v1.23.6/bin/linux/amd64/kubectl";
+    putenv("HELM_CACHE_HOME=/run/apache2/.helm/cache");
+    putenv("HELM_CONFIG_HOME=/run/apache2/.helm/config");
+    $kubectl_url = "https://storage.googleapis.com/kubernetes-release/release/%s/bin/linux/amd64/kubectl";
     $kubectl_bin = "/run/apache2/kubectl";
+    $helm_url    = "https://get.helm.sh/helm-v3.15.0-linux-amd64.tar.gz";
+    $helm_bin    = "/run/apache2/helm";
     $credentials_file = "/var/www/credentials.csv";
+    $repositories_file = "/var/www/repositories.csv";
+    $lock_file = "/run/apache2/lock";
     $kubectl_extra_args = isset($_ENV['KUBECTL_EXTRA_ARGS']) ? $_ENV['KUBECTL_EXTRA_ARGS'] : "";
+    $helm_extra_args = isset($_ENV['HELM_EXTRA_ARGS']) ? $_ENV['HELM_EXTRA_ARGS'] : "";
+
+    class Lock {
+      private $flock;
+      private $lock_file;
+      public function __construct($file) {
+        $this->lock_file = $file;
+      }
+
+      public function getLock() {
+        $this->flock = fopen($this->lock_file, "c");
+        if (flock($this->flock, LOCK_EX | LOCK_NB)) {
+          return;
+        } else {
+          error_log("ERROR: Retry later, lock already acquired");
+          http_response_code(409);
+          exit;
+        }
+      }
+
+      public function releaseLock() {
+        fflush($this->flock);
+        flock($this->flock, LOCK_UN);
+        unlink($this->lock_file);
+      }
+    }
+
+    function exec_and_debug($cmd, &$output = null, &$rc = null) {
+      error_log("Running: $cmd");
+      exec($cmd, $output, $rc);
+      error_log("Output: " . implode("\n", $output));
+    }
+
+    $lock = new Lock($lock_file);
 
     if (! file_exists($kubectl_bin)) {
-      @file_put_contents($kubectl_bin, file_get_contents($kubectl_url));
-      @system("chmod +x $kubectl_bin");
+      error_log("Kubectl missing, downloading...");
+      $lock->getLock();
+      try {
+        $curl = curl_init();
+        curl_setopt_array($curl,[
+          CURLOPT_URL => "https://" . $_ENV['KUBERNETES_SERVICE_HOST'] . "/version",
+          CURLOPT_RETURNTRANSFER => true,
+          CURLOPT_HEADER         => false,
+          CURLOPT_SSL_VERIFYHOST => false,
+          CURLOPT_SSL_VERIFYPEER => false,
+        ]);
+        $k8s_version = json_decode(curl_exec($curl))->gitVersion;
+        file_put_contents($kubectl_bin, file_get_contents(sprintf($kubectl_url, $k8s_version)));
+        system("chmod +x $kubectl_bin");
+      } catch (Exception $e) {
+        throw new Exception($e->message);
+      }
+      $lock->releaseLock();
+    }
+
+    if (! file_exists($helm_bin)) {
+      error_log("Helm missing, downloading...");
+      $lock->getLock();
+      try {
+        $helm_tar = proc_open(
+          "tar vzx --strip-components=1 --wildcards '*/helm'",
+          [
+            ["pipe", "r"],
+            ["pipe", "w"],
+            ["pipe", "w"],
+          ],
+          $pipes,
+          dirname($helm_bin),
+          []
+        );
+        fwrite($pipes[0], file_get_contents($helm_url));
+        fclose($pipes[0]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $helm_tar_rc = proc_close($helm_tar);
+        system("chmod +x $helm_bin");
+      } catch (Exception $e) {
+        throw new Exception($e->message);
+      }
+      $lock->releaseLock();
+    }
+
+    $helm_needs_update = false;
+    $fh = fopen($repositories_file,"r");
+    while($row = fgets($fh)) {
+      $rc = null;
+      $output = null;
+      if (empty(trim($row))) {
+        continue;
+      }
+
+      [$name, $url] = explode(' ', trim($row));
+      if( file_exists('/run/apache2/.helm/cache/repository/' . $name . '-charts.txt')) {
+        continue;
+      }
+
+      $lock->getLock();
+      error_log("Helm repo $name needs to be added...");
+      $helm_needs_update = true;
+      $helm_cmd = "$helm_bin repo add $name '$url'";
+      exec_and_debug($helm_cmd, $output, $rc);
+      $lock->releaseLock();
+    }
+    fclose($fh);
+
+    if ($helm_needs_update) {
+      $lock->getLock();
+      $helm_cmd = "$helm_bin repo update";
+      exec_and_debug($helm_cmd, $output, $rc);
+      $lock->releaseLock();
     }
 
     if (! isset($_GET['shared_secret']) || ! $_GET['shared_secret']) {
@@ -30,21 +143,35 @@ data:
     }
 
     $provided_secret = $_GET['shared_secret'];
-
     $fh = fopen($credentials_file,"r");
-
     while($row = fgets($fh)) {
       $rc = null;
       $output = null;
       $secret_matched = false;
+      if (empty(trim($row))) {
+        continue;
+      }
 
       [$secret, $type, $namespace, $name] = explode(' ', trim($row));
-      if ($secret == $provided_secret) {
+      if (!empty($secret) && $secret == $provided_secret) {
         $secret_matched = true;
-        $kubectl_cmd = "$kubectl_bin $kubectl_extra_args rollout restart -n $namespace $type $name";
-        error_log("Running: $kubectl_cmd");
-        exec($kubectl_cmd, $output, $rc);
-        error_log("Output: " . implode("\n", $output));
+        if ($type == "helm") {
+          $release_info_arr = [];
+          exec_and_debug("$helm_bin list -n $namespace --all --no-headers -o yaml --filter '^$name$' | grep chart: | awk '{print $2}'", $release_info_arr);
+          $release_info = explode('-', $release_info_arr[0]);
+          $chart = implode('-', array_slice($release_info, 0, -1));
+          $version = $release_info[count($release_info) - 1];
+
+          $repo_info_arr = [];
+          exec_and_debug("$helm_bin search repo $chart --version $version -o yaml | grep name: | head -n1 | grep -Po ' [\d\w-]+/' | tr -d ' /'", $repo_info_arr);
+          $repository = $repo_info_arr[0];
+
+          $rollout_cmd = "$helm_bin $helm_extra_args upgrade --version $version --reuse-values -n $namespace $name $repository/$chart";
+        } else {
+          $rollout_cmd = "$kubectl_bin $kubectl_extra_args rollout restart -n $namespace $type $name";
+        }
+        exec_and_debug($rollout_cmd, $output, $rc);
+        echo implode("\n", $output);
         if ($rc === 0) {
           http_response_code(200);
           exit;
@@ -54,6 +181,7 @@ data:
         }
       }
     }
+    fclose($fh);
 
     if ($secret_matched === false) {
       http_response_code(403);

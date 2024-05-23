@@ -60,3 +60,19 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{- define "k8s-workload-rollout-api.credentials" -}}
+{{- with .Values.credentials }}
+{{- range . }}
+{{ .token }} {{ .type }} {{ .namespace }} {{ .target }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "k8s-workload-rollout-api.repositories" -}}
+{{- with .Values.helm.repositories }}
+{{- range . }}
+{{ .name }} {{ .url }}
+{{- end }}
+{{- end }}
+{{- end }}

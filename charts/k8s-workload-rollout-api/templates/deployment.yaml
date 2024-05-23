@@ -11,8 +11,10 @@ spec:
       {{- include "k8s-workload-rollout-api.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
       annotations:
+        checksum/configmap: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/credentials: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+      {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
@@ -49,10 +51,14 @@ spec:
           - name: html
             mountPath: /var/www/html
             readOnly: true
-          - name: credentials
+          - name: secrets
             mountPath: /var/www/credentials.csv
             readOnly: true
             subPath: credentials.csv
+          - name: secrets
+            mountPath: /var/www/repositories.csv
+            readOnly: true
+            subPath: repositories.csv
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -66,7 +72,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
-        - name: credentials
+        - name: secrets
           secret:
             secretName: {{ include "k8s-workload-rollout-api.fullname" . }}
 
