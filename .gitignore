@@ -2,3 +2,4 @@
 *dev*
 /tmp
 /build-zulip-chart-from-upstream.sh
+charts/checkmk
