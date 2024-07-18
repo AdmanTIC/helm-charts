@@ -1,6 +1,6 @@
 ---
 {{- if .Values.ingress.enabled }}
-apiVersion: extensions/v1beta1
+apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: apache-varnish-php-mysql-sftp-{{ include "short_name" . }}
@@ -36,8 +36,10 @@ spec:
         paths:
           - path: /
             backend:
-              serviceName: apache-varnish-php-mysql-sftp-{{ include "short_name" $ }}
-              servicePort: http
+              service:
+                name: apache-varnish-php-mysql-sftp-{{ include "short_name" $ }}
+                port:
+                  name: http
   {{- with .Values.ingress.alias_redirects }}
   {{- range ternary (compact (splitList "\n" (toString .))) . (kindIs "string" .) }}
     - host: {{ . }}
@@ -45,8 +47,10 @@ spec:
         paths:
           - path: /
             backend:
-              serviceName: apache-varnish-php-mysql-sftp-{{ include "short_name" $ }}
-              servicePort: http
+              service:
+                name: apache-varnish-php-mysql-sftp-{{ include "short_name" $ }}
+                port:
+                  name: http
   {{- end }}
   {{- end }}
   {{- with .Values.ingress.alternative_names }}
@@ -56,8 +60,10 @@ spec:
         paths:
           - path: /
             backend:
-              serviceName: apache-varnish-php-mysql-sftp-{{ include "short_name" $ }}
-              servicePort: http
+              service:
+                name: apache-varnish-php-mysql-sftp-{{ include "short_name" $ }}
+                port:
+                  name: http
   {{- end }}
   {{- end }}
 
