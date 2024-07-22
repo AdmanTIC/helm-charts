@@ -35,6 +35,7 @@ spec:
       http:
         paths:
           - path: /
+            pathType: Prefix
             backend:
               service:
                 name: apache-varnish-php-mysql-sftp-{{ include "short_name" $ }}
@@ -46,6 +47,7 @@ spec:
       http:
         paths:
           - path: /
+            pathType: Prefix
             backend:
               service:
                 name: apache-varnish-php-mysql-sftp-{{ include "short_name" $ }}
@@ -59,6 +61,7 @@ spec:
       http:
         paths:
           - path: /
+            pathType: Prefix
             backend:
               service:
                 name: apache-varnish-php-mysql-sftp-{{ include "short_name" $ }}
