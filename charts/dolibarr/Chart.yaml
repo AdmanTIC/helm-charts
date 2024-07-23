@@ -4,7 +4,7 @@ name: dolibarr
 description: Chart Helm for Dolibarr
 icon: https://www.dolibarr.org/medias/image/www.dolibarr.org/images/dolibarr_logo.svg
 type: application
-version: 0.0.3
+version: 0.0.4
 appVersion: 18.0.4
 
 dependencies:
