@@ -131,7 +131,7 @@ spec:
               value: "y"
             {{- end }}
 
-            {{- if (gt (len (default "" (toString .Values.sftp.port))) 0) and ( (gt (len (default "" .Values.sftp.users.with_password)) 0) or (gt (len (default "" .Values.sftp.users.with_key)) 0)) }}
+            {{- if and (gt (len (default "" (toString .Values.sftp.port))) 0) (or (gt (len (default "" .Values.sftp.users.with_password)) 0) (gt (len (default "" .Values.sftp.users.with_key)) 0)) }}
             - name: SFTP_ENABLED
               value: "y"
             {{- end }}
