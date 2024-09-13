@@ -2,6 +2,7 @@ global:
   project: ""
   destination:
     server: https://kubernetes.default.svc
+    namespace: "{{ .name }}"
   sources: []
   syncPolicy:
     automated: {}
