@@ -11,7 +11,7 @@ spec:
     {{- tpl ((mergeOverwrite (dict) (deepCopy (default (dict) $.Values.global.destination)) (deepCopy (default (dict) .destination))) | toYaml) . | nindent 4 }}
   project: {{ coalesce $.Values.global.project .project | quote }}
   sources: 
-    {{- tpl ((mergeOverwrite (dict) (deepCopy (default (dict) $.Values.global.source)) (deepCopy (default (dict) .source))) | toYaml) . | nindent 4 }}
+    {{- tpl (coalesce $.Values.global.sources .sources | toYaml) . | nindent 4 }}
   syncPolicy:
     {{- tpl ((mergeOverwrite (dict) (deepCopy (default (dict) $.Values.global.syncPolicy)) (deepCopy (default (dict) .syncPolicy))) | toYaml) . | nindent 4 }}
 

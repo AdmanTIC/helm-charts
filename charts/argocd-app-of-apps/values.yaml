@@ -2,16 +2,7 @@ global:
   project: ""
   destination:
     server: https://kubernetes.default.svc
-  sources:
-    - chart: ""
-      helm:
-        valueFiles:
-        - $values/apps/{{ .name }}.yml
-    - ref: values
-      repoURL:
-      targetRevision: HEAD
-    repoURL: ""
-    targetRevision: ""
+  sources: []
   syncPolicy:
     automated: {}
     syncOptions:
