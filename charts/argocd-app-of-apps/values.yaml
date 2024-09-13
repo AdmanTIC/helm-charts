@@ -1,0 +1,23 @@
+global:
+  project: ""
+  destination:
+    server: https://kubernetes.default.svc
+  sources:
+    - chart: ""
+      helm:
+        valueFiles:
+        - $values/apps/{{ .name }}.yml
+    - ref: values
+      repoURL:
+      targetRevision: HEAD
+    repoURL: ""
+    targetRevision: ""
+  syncPolicy:
+    automated: {}
+    syncOptions:
+    - CreateNamespace=true
+
+applications: []
+#  - name: my-app
+#    destination:
+#      namespace: my-app
