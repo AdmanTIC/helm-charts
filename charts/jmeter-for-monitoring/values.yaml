@@ -27,3 +27,19 @@ jmxURL: ""
 args: []
 #  - -JapiFqdn: api.test.com
 #  - -JapiPath: /api/v1/testRoute
+
+apache:
+  enabled: false
+  service:
+    port: 80
+    type: ClusterIP
+    clusterIP: ""
+  ingress:
+    enabled: false
+    pathType: ImplementationSpecific
+    hostname: ""
+    path: /
+    annotations: {}
+    ingressClassName: nginx
+    tls: true
+    extraHosts: []
