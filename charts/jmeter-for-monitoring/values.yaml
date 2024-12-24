@@ -16,6 +16,12 @@ resources: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
+extraEnv: {}
+# extraConfigMap:
+#   - name: <UNIQUE_NAME>
+#     mountPath: <PATH>
+#     content: <CONTENT>
+extraConfigMap: []
 
 jmxURL: ""
 args: []

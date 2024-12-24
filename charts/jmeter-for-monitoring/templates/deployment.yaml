@@ -11,8 +11,9 @@ spec:
       {{- include "jmeter.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
       annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
@@ -47,13 +48,28 @@ spec:
             {{- toYaml .Values.args | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- with .Values.volumeMounts }}
+          {{- if or .Values.volumeMounts .Values.extraConfigMap }}
           volumeMounts:
+          {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
           {{- end }}
-      {{- with .Values.volumes }}
+          {{- range .Values.extraConfigMap }}
+            - name: {{ .name }}
+              mountPath: {{ .mountPath }}
+              subPath: {{ base .mountPath }}
+              readOnly: true
+          {{- end }}
+          {{- end }}
+      {{- if or .Values.volumes .Values.extraConfigMap }}
       volumes:
+      {{ with .Values.volumes }}
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- range .Values.extraConfigMap }}
+        - name: {{ .name }}
+          configMap:
+            name: "{{ include "jmeter.fullname" $ }}-{{ .name }}"
+      {{- end }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
