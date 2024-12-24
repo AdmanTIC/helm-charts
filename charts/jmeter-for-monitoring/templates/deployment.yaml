@@ -29,14 +29,24 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
-        - name: {{ .Chart.Name }}
+        - name: app
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if .Values.apache.enabled }}
+          ports:
+            - name: app
+              containerPort: {{ .Values.apache.service.port }}
+              protocol: TCP
+          {{- end }}
           env:
             - name: JMX_URL
               value: "{{ .Values.jmxURL}}"
+          {{- if .Values.apache.enabled }}
+            - name: WITH_APACHE
+              value: "true"
+          {{- end }}
 {{- with .Values.extraEnv }}
 {{- range $k, $v := . }}
             - name: "{{ $k }}"

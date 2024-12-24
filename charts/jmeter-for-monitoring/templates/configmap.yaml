@@ -4,10 +4,7 @@ kind: ConfigMap
 metadata:
   name: "{{ include "jmeter.fullname" $ }}-{{ .name }}"
   labels:
-    {{- include "jmeter.labels" . | nindent 8 }}
-    {{- with .Values.podLabels }}
-    {{- toYaml . | nindent 8 }}
-    {{- end }}
+    {{- include "jmeter.labels" $ | nindent 4 }}
 data:
   {{ print (base .mountPath) ": |" | nindent 2 }}
     {{- .content | nindent 4 }}
