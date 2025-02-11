@@ -1,4 +1,5 @@
 global:
+  prune: false
   project: ""
   destination:
     server: https://kubernetes.default.svc
@@ -11,5 +12,6 @@ global:
 
 applications: []
 #  - name: my-app
+#    prune: false
 #    destination:
 #      namespace: my-app
