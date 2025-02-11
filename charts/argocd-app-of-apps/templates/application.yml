@@ -6,6 +6,10 @@ kind: Application
 metadata:
   name: {{ .name }}
   namespace: argocd
+  {{- if or .prune (and $.Values.global.prune (not (hasKey . "prune"))) }}
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  {{- end }}
 spec:
   destination:
     {{- tpl ((mergeOverwrite (dict) (deepCopy (default (dict) $.Values.global.destination)) (deepCopy (default (dict) .destination))) | toYaml) . | nindent 4 }}
