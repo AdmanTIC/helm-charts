@@ -145,7 +145,7 @@ config:
         include /etc/nginx/conf.d/*.conf;
     }
 
-  conf.d/default.conf: |
+  conf.d__default.conf: |
     server {
         listen       80;
         server_name  localhost;

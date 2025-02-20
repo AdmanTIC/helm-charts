@@ -13,10 +13,12 @@ spec:
       {{- include "nginx-default-backend.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
       annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/config-configmap.yaml") $ | sha256sum }}
+        checksum/content: {{ include (print $.Template.BasePath "/content-configmap.yaml") $ | sha256sum }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "nginx-default-backend.labels" . | nindent 8 }}
         {{- with .Values.podLabels }}
@@ -46,12 +48,30 @@ spec:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- with .Values.volumeMounts }}
           volumeMounts:
+            {{- range $k, $v := .Values.config }}
+            - name: config
+              mountPath: /etc/nginx/{{ $k | replace ".." "" | replace "__" "/" }}
+              subPath: {{ $k | quote }}
+              readOnly: true
+            {{- end }}
+            {{- range $k, $v := .Values.content }}
+            - name: content
+              mountPath: /usr/share/nginx/html/{{ $k | replace ".." "" | replace "__" "/" }}
+              subPath: {{ $k | quote }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
-          {{- end }}
-      {{- with .Values.volumes }}
+            {{- end }}
       volumes:
+      - name: config
+        configMap:
+          name: {{ include "nginx-default-backend.fullname" . }}-config
+      - name: content
+        configMap:
+          name: {{ include "nginx-default-backend.fullname" . }}-content
+      {{- with .Values.volumes }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.nodeSelector }}

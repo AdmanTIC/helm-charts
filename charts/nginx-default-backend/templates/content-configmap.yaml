@@ -8,13 +8,13 @@ metadata:
 data:
   {{- with $.Values.content }}
   {{- range $k, $v := . }}
-  "{{ $k }}": {{ tpl $v $ | quote }}
+  {{ $k | quote }}: {{ tpl $v $ | quote }}
   {{- end }}
   {{- end }}
 
 binaryData:
   {{- with $.Values.contentEncoded }}
   {{- range $k, $v := . }}
-  "{{ $k }}": {{ tpl $v $ | quote }}
+  {{ $k | quote }}: {{ tpl $v $ | quote }}
   {{- end }}
   {{- end }}
