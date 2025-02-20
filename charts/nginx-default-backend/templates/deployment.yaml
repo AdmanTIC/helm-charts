@@ -61,6 +61,12 @@ spec:
               subPath: {{ $k | quote }}
               readOnly: true
             {{- end }}
+            {{- range $k, $v := .Values.contentEncoded }}
+            - name: content
+              mountPath: /usr/share/nginx/html/{{ $k | replace ".." "" | replace "__" "/" }}
+              subPath: {{ $k | quote }}
+              readOnly: true
+            {{- end }}
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
