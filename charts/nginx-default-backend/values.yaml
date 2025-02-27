@@ -88,11 +88,11 @@ resources: {}
 # This is to setup the liveness and readiness probes more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
 livenessProbe:
   httpGet:
-    path: /
+    path: /health
     port: http
 readinessProbe:
   httpGet:
-    path: /
+    path: /health
     port: http
 
 # This section is for setting up autoscaling more information can be found here: https://kubernetes.io/docs/concepts/workloads/autoscaling/
@@ -152,6 +152,11 @@ config:
         location / {
             root   /usr/share/nginx/html;
             index  index.html index.htm;
+            return 503;
+        }
+
+        location /health {
+            return 200 "Ok.";
         }
 
         #error_page  404              /404.html;
@@ -202,13 +207,11 @@ content:
     </style>
     </head>
     <body>
-    <h1>An error occurred.</h1>
-    <p>Sorry, the page you are looking for is currently unavailable.<br/>
-    Please try again later.</p>
-    <p>If you are the system administrator of this resource then you should check
-    the error log for details.</p>
-    <p><em>Faithfully yours, nginx.</em></p>
+    <h1>Maintenance in progress</h1>
+    <p>Website is under maintenance, please try again in a while.</p>
     </body>
+    <h1>Maintenance en cours</h1>
+    <p>Le site est en cours de maintenance, merci de réessayer dans un moment.</p>
     </html>
 
 contentEncoded: {}
