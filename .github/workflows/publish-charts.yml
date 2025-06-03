@@ -31,4 +31,4 @@ jobs:
     - name: Push to Chartmuseum
       run: |
         set -ex
-        for CHART in packaged-charts/* ; do helm push --force $CHART oci://ghcr.io/admantic/helm-charts ; done
+        for CHART in packaged-charts/* ; do helm push $CHART oci://ghcr.io/admantic/helm-charts ; done
