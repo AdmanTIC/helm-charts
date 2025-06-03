@@ -10,14 +10,13 @@ jobs:
   publish:
 
     runs-on: ubuntu-latest
-    container: dtzar/helm-kubectl:3.2.1
+    container: dtzar/helm-kubectl:3.18.1
     steps:
     - uses: actions/checkout@v2
 
-    - name: Requirements and Chartmuseum repo. authentication
+    - name: Authenticate to GHCR
       run: |
-        helm plugin install --version v0.9.0 https://github.com/chartmuseum/helm-push.git
-        helm repo add chartmuseum https://chartmuseum.admantic.fr --username ${{ secrets.REPO_USER }} --password ${{ secrets.REPO_PASSWORD }}
+        echo "${{ secrets.GHCR_TOKEN }}" | helm registry login ghcr.io/admantic/helm-charts --username bmalynovytch --password-stdin
 
     - name: Package Charts
       run: |
@@ -32,4 +31,4 @@ jobs:
     - name: Push to Chartmuseum
       run: |
         set -ex
-        for CHART in packaged-charts/* ; do helm push --force $CHART chartmuseum ; done
+        for CHART in packaged-charts/* ; do helm push --force $CHART oci://ghcr.io/admantic/helm-charts ; done
