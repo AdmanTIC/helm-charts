@@ -9,15 +9,8 @@ Library which gathers different custom Helm Charts.
 
 ## Usage
 
-You can add the public Chartmuseum and install one of these charts:
+You can directly install the chart:
 
 ```bash
-$ helm repo add public-admantic-charts https://chartmuseum.admantic.fr
-$ helm upgrade -in $NAMESPACE --create-namespace $NAME public-admantic-charts/$CHART
-```
-
-Or you can directly install the chart:
-
-```bash
-helm upgrade -in $NAMESPACE --create-namespace $NAME --repo=https://chartmuseum.admantic.fr/ public-admantic-charts/$CHART
+helm upgrade -in $NAMESPACE --create-namespace $NAME --repo=oci://ghcr.io/admantic/helm-charts $CHART
 ```
