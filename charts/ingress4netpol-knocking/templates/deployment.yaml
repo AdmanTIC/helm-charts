@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ingress4netpol-knocking.fullname" . }}
+  labels:
+    {{- include "ingress4netpol-knocking.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ingress4netpol-knocking.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "ingress4netpol-knocking.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "ingress4netpol-knocking.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh","-c","pkill -ef apache2 ; while pgrep -f apache2 ; do sleep 1 ; done ; /cleanup-network-policies.sh 9999999999"]
+          env:
+          - name: NETPOL_TARGET_LABELS
+            value: {{ range $k, $v := .Values.networkPolicies.targetLabels }}{{ $k }}={{ $v }},{{ end }}
+          - name: NETPOL_OPERATOR_LABELS
+            value: {{ range $k, $v := fromYaml (include "ingress4netpol-knocking.labels" .) }}{{ $k }}={{ $v }},{{ end }}{{ with .Values.podLabels }},{{ range $k, $v := . }},{{ end }}{{ end }}
+          - name: NETPOL_ALLOW_PORTS
+            value: {{ join "," .Values.networkPolicies.allowPorts }}
+          - name: NETPOL_NAME
+            value: {{ .Release.Name }}-{{ .Values.networkPolicies.namePrefix }}
+          - name: NETPOL_DURATION
+            value: {{ .Values.networkPolicies.allowDuration | quote }}
+          - name: NETPOL_NAMESPACE
+            value: {{ .Release.Namespace }}
+          {{- with .Values.networkPolicies.proxyHeader }}
+          - name: NETPOL_PROXY_HEADER
+            value: {{ . }}
+          {{- end }}
+          {{- with .Values.networkPolicies.trustedProxies }}
+          - name: NETPOL_TRUSTED_PROXIES
+            value: {{ join "," . | quote }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- with .Values.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
