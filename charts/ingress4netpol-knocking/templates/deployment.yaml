@@ -46,7 +46,7 @@ spec:
           - name: NETPOL_ALLOW_PORTS
             value: {{ join "," .Values.networkPolicies.allowPorts }}
           - name: NETPOL_NAME
-            value: {{ .Release.Name }}-{{ .Values.networkPolicies.namePrefix }}
+            value: {{ .Values.networkPolicies.namePrefix }}-{{ .Release.Name }}
           - name: NETPOL_DURATION
             value: {{ .Values.networkPolicies.allowDuration | quote }}
           - name: NETPOL_NAMESPACE

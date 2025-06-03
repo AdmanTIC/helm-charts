@@ -1,4 +1,4 @@
 apiVersion: v2
 name: ingress4netpol-knocking
 description: Knock the ingress to open the ports on Kubernetes with NetworkPolicies
-version: 0.1.1
+version: 0.1.2
