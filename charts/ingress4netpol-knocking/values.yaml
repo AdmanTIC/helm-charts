@@ -27,7 +27,6 @@ ingress:
   #      - chart-example.local
 
 networkPolicies:
-  namePrefix: ingress4netpol-knocking
   targetLabels: {}
     # app.kubernetes.io/name: myApp
     # app.kubernetes.io/managed-by: Helm
