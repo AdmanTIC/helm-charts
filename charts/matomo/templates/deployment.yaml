@@ -46,8 +46,10 @@ spec:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- with .Values.volumeMounts }}
           volumeMounts:
+            - name: matomo
+              mountPath: /var/www/html
+          {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
           {{- end }}
           env:
@@ -60,8 +62,11 @@ spec:
             - name: MATOMO_DATABASE_DBNAME
               value: {{ .Values.mariadb.userDatabase.name.value }}
 
-      {{- with .Values.volumes }}
       volumes:
+        - name: matomo
+          persistentVolumeClaim:
+            claimName: {{ include "matomo.fullname" . }}
+      {{- with .Values.volumes }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.nodeSelector }}
