@@ -5,4 +5,5 @@ metadata:
   labels:
     {{- include "nebulaoss-nebula.labels" . | nindent 4 }}
 data:
-  config.yml: {{ .Values.configYml }}
+  config.yml: |
+    {{- .Values.configYml | nindent 4 }}
