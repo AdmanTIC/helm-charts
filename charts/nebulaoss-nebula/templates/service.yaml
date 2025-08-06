@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nebulaoss-nebula.fullname" . }}
+  labels:
+    {{- include "nebulaoss-nebula.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: nebula
+      protocol: UDP
+      name: nebula
+  selector:
+    {{- include "nebulaoss-nebula.selectorLabels" . | nindent 4 }}
