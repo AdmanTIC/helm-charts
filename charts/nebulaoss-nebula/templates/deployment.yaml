@@ -41,6 +41,7 @@ spec:
             - name: nebula
               containerPort: {{ .Values.service.port }}
               protocol: UDP
+              hostPort: {{ .Values.service.hostPort }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
