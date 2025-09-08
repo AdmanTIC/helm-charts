@@ -71,7 +71,7 @@ spec:
                   apt update
                   apt install -y cron
                   MATOMO_URL=$(grep trusted_hosts /var/www/html/config/config.ini.php | cut -d'"' -f2 | head -n1)
-                  echo "35 * * * * /usr/local/bin/php /var/www/html/console core:archive --url=https://${MATOMO_URL}/ &> /dev/null" | crontab -u www-data -
+                  echo "35 * * * * /usr/bin/su www-data -s /bin/sh -c '/usr/local/bin/php -d memory_limit=0 /var/www/html/console core:archive --url=https://${MATOMO_URL}/' > /proc/1/fd/1 2>&1" | crontab -u root -
                   cron
       volumes:
         - name: matomo
