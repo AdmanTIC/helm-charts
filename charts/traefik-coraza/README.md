@@ -48,6 +48,8 @@ Deux choix de ce chart, à ne pas « corriger » :
 helm upgrade --install traefik . -n ingress-controller --create-namespace
 ```
 
+Le nom du release compte : voir « Remplacer un Traefik existant » ci-dessous.
+
 Pas de `helm dependency update` nécessaire : `charts/traefik-41.0.2.tgz` est
 versionné.
 
@@ -70,6 +72,66 @@ helm dependency update .
 ```
 
 puis committer `Chart.lock` et le nouveau `charts/*.tgz`, en retirant l'ancien.
+
+## Remplacer un Traefik existant
+
+Les objets du subchart portent **exactement les noms et labels qu'ils auraient eus
+avec `helm install traefik traefik/traefik`** : `traefik` pour le DaemonSet, le
+Service, le ServiceAccount et l'IngressClass, `traefik-<namespace>` pour le
+ClusterRole et le ClusterRoleBinding. Vérifié par diff du rendu contre le chart
+amont : aucun écart de nom ni de label.
+
+Un `helm upgrade` du release existant adopte donc ses objets au lieu d'en créer de
+nouveaux :
+
+```bash
+helm upgrade traefik . -n ingress-controller
+```
+
+Deux mécanismes le garantissent :
+
+- `traefik.fullnameOverride: traefik` découple les **noms** du nom du release.
+  Sans ça, un release nommé `traefik-coraza` produirait un DaemonSet
+  `traefik-coraza` : Helm créerait les objets neufs et supprimerait les anciens —
+  coupure de service, et nodePort réattribué sur le Service NodePort.
+- [templates/naming-guard.yaml](templates/naming-guard.yaml) vérifie au rendu que
+  les **labels de sélecteur** correspondent à ceux du standalone.
+
+### Pourquoi un garde-fou plutôt qu'une note
+
+`app.kubernetes.io/name` et `app.kubernetes.io/instance` composent
+`spec.selector.matchLabels`, **immuable** sur un DaemonSet — le chart amont le
+signale lui-même dans son `_helpers.tpl`. Une divergence ne dégrade pas le
+service : elle fait échouer l'upgrade côté API, *après* que Helm a appliqué une
+partie du release. Le garde-fou déplace cette découverte au `helm template`.
+
+`app.kubernetes.io/instance` vaut `<release>-<namespace>` par défaut. Si le
+release de ce chart ne porte pas le nom du release Traefik remplacé, le rendu
+échoue avec la valeur exacte à poser :
+
+```bash
+helm upgrade traefik-coraza . -n ingress-controller --set traefik.instanceLabelOverride=traefik-ingress-controller
+```
+
+Relever la valeur réellement en place avant de choisir :
+
+```bash
+kubectl -n ingress-controller get daemonset,deployment -l app.kubernetes.io/name=traefik -o jsonpath='{range .items[*]}{.kind}{"\t"}{.metadata.name}{"\t"}{.spec.selector.matchLabels}{"\n"}{end}'
+```
+
+### Deux points à vérifier avant de basculer
+
+- **Si l'existant est un `Deployment`** et non un DaemonSet, l'upgrade change de
+  `kind` à nom constant : Helm crée le DaemonSet et supprime le Deployment. Le
+  Service sélectionne les deux pendant la transition. Prévoir une fenêtre.
+- **`standaloneNaming.expectedRelease`** vaut `traefik` par défaut. Pour un
+  déploiement neuf sans Traefik à reprendre, le vider — et vider aussi
+  `traefik.fullnameOverride` pour retrouver un nommage dérivé du nom du release.
+
+Deux releases de ce chart ne peuvent pas coexister dans un même namespace, par
+construction : `fullnameOverride` fixe les noms, et le ConfigMap `coraza-config`
+comme le Service `coraza` ont eux aussi des noms fixes. C'est cohérent avec le
+fait qu'il n'y a qu'un ingress controller.
 
 ## Avant la première installation
 

@@ -162,6 +162,28 @@ catchAll:
   tls: {}
 
 # -----------------------------------------------------------------------------
+#  Compatibilité de nommage avec un install standalone du chart Traefik
+#
+#  Permet de déployer ce chart À LA PLACE d'un release Traefik existant : les
+#  objets du subchart reprennent les noms et les labels qu'ils auraient eus en
+#  standalone, donc l'upgrade les adopte au lieu d'en créer de nouveaux.
+# -----------------------------------------------------------------------------
+standaloneNaming:
+  # Nom du release Traefik standalone auquel s'aligner. Sert uniquement de
+  # référence à la vérification faite par templates/naming-guard.yaml, qui
+  # compare les noms et labels rendus à ceux qu'aurait produits
+  # `helm install <expectedRelease> traefik/traefik` dans le même namespace.
+  #
+  # Mettre à "" pour un déploiement neuf, sans Traefik existant à reprendre :
+  # la vérification est désactivée.
+  #
+  # Attention, "" ne « libère » pas le nommage : `traefik.fullnameOverride` reste
+  # à `traefik` plus bas, donc les objets s'appellent toujours `traefik`. Pour
+  # revenir à un nommage dérivé du nom du release, vider aussi
+  # `traefik.fullnameOverride`.
+  expectedRelease: traefik
+
+# -----------------------------------------------------------------------------
 #  Subchart Traefik — overrides
 #  Clés alignées sur le chart 41.0.2 (cf. Chart.yaml). Attention aux
 #  renommages amont : `service.type` → `service.spec.type`,
@@ -171,6 +193,26 @@ catchAll:
 # -----------------------------------------------------------------------------
 traefik:
   enabled: true
+
+  # --- Nommage ---------------------------------------------------------------
+  # Fige les noms d'objets sur ceux d'un install standalone nommé `traefik`,
+  # indépendamment du nom du release de CE chart. Sans ça, un release nommé
+  # « traefik-coraza » produirait un DaemonSet « traefik-coraza », un
+  # ServiceAccount « traefik-coraza », etc., et l'upgrade d'un Traefik existant
+  # créerait des objets neufs au lieu d'adopter les siens.
+  #
+  # Conséquence assumée : deux releases de ce chart ne peuvent pas coexister
+  # dans un même namespace. C'est cohérent — il n'y a qu'un ingress controller.
+  fullnameOverride: traefik
+
+  # `app.kubernetes.io/instance`, qui fait partie de spec.selector.matchLabels,
+  # donc IMMUABLE. Par défaut le subchart calcule `<release>-<namespace>`.
+  #
+  # À renseigner UNIQUEMENT si le release de ce chart ne porte pas le même nom
+  # que le release Traefik remplacé. templates/naming-guard.yaml détecte le cas
+  # au rendu et affiche la valeur exacte à mettre ici, plutôt que de laisser
+  # l'upgrade échouer côté API à mi-parcours.
+  instanceLabelOverride: ""
 
   deployment:
     # Contrainte dure.

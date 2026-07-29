@@ -15,6 +15,16 @@ Chemin du trafic :
   → BLOCAGE ACTIF. Vérifier que le rodage des faux positifs est terminé.
 {{- end }}
 Épinglage local : coraza.service.mode = {{ .Values.coraza.service.mode }}
+
+Identité des objets Traefik (alignée sur un install standalone) :
+  noms                       {{ include "traefik-coraza.tfFullname" . }}  /  {{ include "traefik-coraza.tfFullname" . }}-{{ include "traefik-coraza.tfNamespace" . }} (RBAC)
+  app.kubernetes.io/name     {{ include "traefik-coraza.tfNameLabel" . }}
+  app.kubernetes.io/instance {{ include "traefik-coraza.tfInstanceLabel" . }}   <- immuable
+{{- if .Values.standaloneNaming.expectedRelease }}
+  vérifié contre un standalone nommé « {{ .Values.standaloneNaming.expectedRelease }} » dans ce namespace.
+{{- else }}
+  ⚠️ vérification désactivée (standaloneNaming.expectedRelease vide).
+{{- end }}
 {{- if contains ":TAG" .Values.coraza.image }}
 
 !! coraza.image vaut « {{ .Values.coraza.image }} » : le tag n'est PAS épinglé.
