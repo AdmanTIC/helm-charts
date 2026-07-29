@@ -1,0 +1,421 @@
+# =============================================================================
+#  traefik-coraza — values
+# =============================================================================
+#  Chaque réglage de la section `traefik:` corrige un échec constaté en cluster,
+#  et le commentaire qui l'accompagne dit lequel. Plusieurs sont contre-intuitifs.
+#  Les valeurs marquées ⚠️ ne sont pas vérifiées : les confirmer, ne pas les
+#  propager comme des faits.
+#
+#  ⚠️ ANCRES YAML `&corazaImage` / `&corazaPull`
+#     Résolues au *parse* du fichier, pas au merge Helm. Un `--set coraza.image=…`
+#     ou un `-f` externe ne changerait QUE la valeur documentaire `coraza.image`,
+#     pas les deux conteneurs. Pour changer de tag : éditer ce fichier.
+#     Raison d'être : l'initContainer patche un template livré par l'image et le
+#     sidecar le consomme. Une divergence de tag produirait un Caddyfile patché
+#     issu d'une autre version que celle qui le lit. Ne pas casser l'ancre.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+#  WAF — objets créés par CE chart
+# -----------------------------------------------------------------------------
+coraza:
+  # ⚠️ TAG À ÉPINGLER. `latest` est exclu (cf. ancres ci-dessus).
+  image: &corazaImage ghcr.io/coreruleset/coraza-crs:TAG
+  imagePullPolicy: &corazaPull IfNotPresent
+
+  # Port d'écoute du sidecar Caddy/Coraza dans le pod Traefik.
+  port: 8090
+
+  # ⚠️ Nom FIXE, non préfixé par le release : référencé *littéralement* dans
+  #    `traefik.deployment.additionalVolumes` ci-dessous, parce que les values
+  #    d'un subchart ne passent pas par le moteur de template.
+  #    Le changer ici impose de le changer là-bas aussi.
+  configMapName: coraza-config
+
+  service:
+    # Pour un ExternalName, le nom du Service n'a aucun effet sur le routage :
+    # seul son `externalName` compte. Il reste le nom référencé par l'IngressRoute.
+    name: coraza
+
+    # externalName : Service ExternalName → `localhost`. Traefik résout 127.0.0.1,
+    #                la requête ne quitte jamais le pod : le hop inter-nœuds est
+    #                supprimé, pas seulement raccourci.
+    #                Requiert providers.kubernetesCRD.allowExternalNameServices.
+    #                ⚠️ ce flag est cluster-wide : tout IngressRoute pourra
+    #                proxifier vers un hôte arbitraire → restreindre la création
+    #                d'IngressRoute par RBAC ou policy.
+    #                ⚠️ pas d'endpoints → la readiness du sidecar ne gate plus le
+    #                routage (502 au lieu d'un retrait d'endpoint). Le fail-closed
+    #                est préservé, la dégradation est juste moins propre.
+    # clusterIP    : variante sans le flag. Requiert `nativeLB: true` côté
+    #                IngressRoute (posé automatiquement) pour cibler le ClusterIP
+    #                au lieu des endpoints, sans quoi internalTrafficPolicy n'est
+    #                jamais consulté. Garde la readiness comme gate, au prix d'un
+    #                passage par iptables/nftables et d'un réglage à deux endroits.
+    mode: externalName
+
+    # Mode clusterIP uniquement. Doit sélectionner les pods Traefik.
+    # Par défaut : app.kubernetes.io/name=traefik + instance=<release>-<namespace>.
+    # ⚠️ confirmer avec `kubectl get pod -n <ns> --show-labels`.
+    selector: {}
+
+  # --- directives Sec* poussées dans /opt/coraza/config.d/custom.conf ---------
+  config:
+    # Rester en DetectionOnly jusqu'à la fin du rodage des faux positifs.
+    ruleEngine: DetectionOnly
+
+    requestBodyAccess: "On"
+    requestBodyLimit: 13107200
+    requestBodyNoFilesLimit: 131072
+    requestBodyLimitAction: ProcessPartial
+
+    # Le sandwich rend les phases 3/4 : les règles RESPONSE-* du CRS sont
+    # actives. C'est le gain de ce montage face à ForwardAuth ou au plugin WASM.
+    responseBodyAccess: "On"
+    responseBodyMimeType: "text/plain text/html text/xml application/json"
+    responseBodyLimit: 524288
+    responseBodyLimitAction: ProcessPartial
+
+    audit:
+      # Point ouvert n°3 : les entrées "transaction" n'ont pas été retrouvées.
+      # Basculer temporairement sur `On` pour discriminer « directive écrasée »
+      # vs « sémantique RelevantOnly incomplète dans Coraza ».
+      engine: RelevantOnly
+      # RE2 : pas de (?!…). Tous les 5xx + tous les 4xx sauf 404.
+      relevantStatus: '^(?:5\d{2}|4(?:0[0-35-9]|[1-9]\d))$'
+      # ⚠️ I et E embarquent les corps de requête et de réponse → secrets, tokens
+      #    et données personnelles poussés dans la stack de logs. Les retirer
+      #    après le rodage, ou ajouter dans extraRules :
+      #    SecAuditLogSanitizeArg password,token,authorization
+      parts: ABIJEFHKZ
+      target: /dev/stdout
+      format: JSON
+
+    # Sonde de diagnostic id:1099 — DOIT rester muette. Si elle se déclenche,
+    # Coraza ne voit pas l'IP client réelle et toutes les règles IP du CRS ainsi
+    # que les audit logs sont sans valeur. Si `client_ip` est pourtant correct
+    # côté Caddy, c'est que coraza-caddy lit RemoteAddr au lieu du client résolu
+    # → issue en amont, pas un réglage à faire ici.
+    clientIpProbe:
+      enabled: true
+      privateRanges: "127.0.0.0/8,10.0.0.0/8"
+
+    # Exclusions livrées par défaut (IDs 1000-1006), toutes en `ctl:` donc
+    # évaluées à l'exécution — indispensable, config.d étant chargé AVANT le CRS.
+    builtinExclusions:
+      # ACME http-01 : ne jamais inspecter le challenge, cert-manager en dépend.
+      acmeChallenge: true
+      # WebSocket / gRPC / SSE : l'inspection de corps casse le streaming.
+      streamingProtocols: true
+      # Sondes kubelet + Host numérique interne (neutralise 920350 sans le
+      # désactiver pour l'externe, où un Host numérique reste un signal de scan).
+      internalProbes: true
+
+  # Règles maison. Plage d'ID réservée : 1000-1999 (1000-1006 et 1099 déjà pris
+  # par les exclusions livrées ci-dessus). Préférer `ctl:removeById` à
+  # `SecRuleRemoveById`. Regex RE2 uniquement.
+  extraRules: |
+    # Gabarit — exclure une règle sur un endpoint précis :
+    #SecRule REQUEST_URI "@beginsWith /api/ingest" \
+    #    "id:1010,phase:1,pass,nolog,ctl:removeById=920420"
+
+    # --- RÈGLES DE TEST : décommenter temporairement, puis RETIRER ------------
+    # Smoke test du chemin de refus, indépendant de SecRuleEngine (deny explicite).
+    # Valide que le 403 se propage Coraza → Traefik → client.
+    #   curl -o /dev/null -w '%{http_code}\n' -H 'X-WAF-Test: blockme' https://<host>/
+    #SecRule REQUEST_HEADERS:X-WAF-Test "@streq blockme" \
+    #    "id:1200,phase:1,deny,status:403,log,msg:'WAF smoke test'"
+    #
+    # Vérifie que la phase 4 lit réellement le corps de réponse. Ne matche que si
+    # le Content-Type est dans SecResponseBodyMimeType.
+    #SecRule RESPONSE_BODY "@contains argo" \
+    #    "id:1201,phase:4,pass,log,msg:'phase 4 OK: corps de reponse lu'"
+    #
+    # Réduction du bruit sur les assets statiques — NE PAS activer avant la fin
+    # de l'analyse des faux positifs : supprime aussi la visibilité dessus.
+    #SecRule REQUEST_URI "@rx \.(?:woff2?|ttf|eot|css|js|png|jpe?g|gif|svg|ico|map)$" \
+    #    "id:1006,phase:1,pass,nolog,ctl:removeById=980170,ctl:responseBodyAccess=Off"
+
+# -----------------------------------------------------------------------------
+#  IngressRoute catch-all
+# -----------------------------------------------------------------------------
+catchAll:
+  enabled: true
+  name: waf-catchall
+
+  # Uniquement les entrypoints exposés au public.
+  # Ne JAMAIS y ajouter `internal` → boucle infinie (le chart refuse de rendre).
+  entryPoints:
+    - websecure
+
+  # Doit écraser les routers issus des Ingress applicatifs, qui s'attachent eux
+  # aussi à websecure. La priorité Traefik par défaut dérive de la longueur de la
+  # règle, d'où la valeur volontairement absurde.
+  priority: 1000000
+
+  # Syntaxe Traefik v3. Matche tout host, tout chemin.
+  match: PathPrefix(`/`)
+
+  # `tls: {}` → certificat résolu par SNI depuis le magasin par défaut, alimenté
+  # par les blocs `tls` des Ingress, donc par cert-manager. VALIDÉ en cluster.
+  # Ne pas y mettre de secretName ni de certResolver.
+  tls: {}
+
+# -----------------------------------------------------------------------------
+#  Subchart Traefik — overrides
+#  Clés alignées sur le chart 41.0.2 (cf. Chart.yaml). Attention aux
+#  renommages amont : `service.type` → `service.spec.type`,
+#  `logs.general`/`logs.access` → `log`/`accessLog`,
+#  `ports.web.redirections` → `ports.web.http.redirections`,
+#  `ports.websecure.tls` → `ports.websecure.http.tls`.
+# -----------------------------------------------------------------------------
+traefik:
+  enabled: true
+
+  deployment:
+    # Contrainte dure.
+    kind: DaemonSet
+
+    additionalVolumes:
+      # Template Caddyfile patché, produit par l'initContainer.
+      - name: caddy-template
+        emptyDir: {}
+      # Nos directives Sec*.
+      - name: coraza-config
+        configMap:
+          # ⚠️ doit correspondre à `coraza.configMapName` (non templatable ici).
+          name: coraza-config
+
+    # --- patch du template Caddyfile -----------------------------------------
+    # Régénéré depuis le template vierge de l'image à chaque démarrage, donc
+    # idempotent par construction — aucune garde nécessaire.
+    # awk plutôt que sed : `a\` multiligne diffère entre busybox et GNU.
+    #
+    # Deux injections, deux rôles distincts :
+    #  1. bloc global `servers { trusted_proxies static private_ranges }` —
+    #     c'est ce qui fait résoudre {client_ip} / REMOTE_ADDR. Sans lui,
+    #     client_ip vaut l'IP du pod Traefik.
+    #  2. `header_up X-Forwarded-For {client_ip}` dans reverse_proxy — SANS `+`,
+    #     donc REMPLACE. Avec `+` (comportement par défaut de reverse_proxy,
+    #     RFC 7239), Traefik recevrait "A.B.C.D, 10.85.75.73" dans ClientHost et
+    #     `ipStrategy.depth: 1` cesserait d'être déterministe.
+    #
+    # Pas de runAsUser ici : l'initContainer hérite du podSecurityContext.
+    # Forcer runAsUser: 0 le ferait refuser à l'admission (runAsNonRoot: true).
+    initContainers:
+      # Nom volontairement stable : les procédures de diagnostic le référencent
+      # (kubectl logs … -c caddy-template-patch).
+      - name: caddy-template-patch
+        image: *corazaImage
+        imagePullPolicy: *corazaPull
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            set -e
+            awk '
+              /^[[:space:]]*order coraza_waf first$/ {
+                print
+                print "  servers {"
+                print "    trusted_proxies static private_ranges"
+                print "    client_ip_headers X-Forwarded-For"
+                print "  }"
+                next
+              }
+              /^[[:space:]]*reverse_proxy / {
+                print
+                print "    header_up X-Forwarded-For {client_ip}"
+                next
+              }
+              { print }
+            ' /templates/Caddyfile > /work/Caddyfile
+            # Garde de sortie : si l'amont réorganise le template et que les
+            # ancres ne matchent plus, le pod ne démarre pas. Échec bruyant
+            # plutôt que WAF silencieusement mal configuré.
+            grep -q 'trusted_proxies static private_ranges' /work/Caddyfile
+            grep -q 'header_up X-Forwarded-For'             /work/Caddyfile
+            echo "--- Caddyfile patché ---"; cat /work/Caddyfile
+        volumeMounts:
+          - { name: caddy-template, mountPath: /work }
+        securityContext:
+          allowPrivilegeEscalation: false
+          seccompProfile: { type: RuntimeDefault }
+          capabilities: { drop: ["ALL"] }
+        resources:
+          requests: { cpu: 10m, memory: 32Mi }
+
+    # --- sidecar WAF ---------------------------------------------------------
+    additionalContainers:
+      # Nom volontairement stable : les procédures de diagnostic le référencent
+      # (kubectl logs … -c coraza).
+      - name: coraza
+        image: *corazaImage
+        imagePullPolicy: *corazaPull
+        ports:
+          - name: coraza
+            containerPort: 8090
+        env:
+          # ⚠️ noms exacts à confirmer via `cat /entrypoint.sh` dans l'image.
+          - name: BACKEND
+            value: "http://127.0.0.1:8880"
+          - name: PORT
+            value: "8090"
+          # Le template fait `log { output file ${ACCESSLOG} }` : un chemin de
+          # fichier, pas stdout. Sans ça le log d'accès est introuvable.
+          - name: ACCESSLOG
+            value: "/dev/stdout"
+          # overrides/ est inclus EN DERNIER dans le Caddyfile : c'est la seule
+          # voie pour la paranoïa. Surtout pas config.d, écrasé par crs-setup.conf.
+          # ⚠️ noms de variables à confirmer sur /entrypoint.sh
+          # - { name: BLOCKING_PARANOIA, value: "1" }
+          # - { name: ANOMALY_INBOUND,   value: "5" }
+          # - { name: ANOMALY_OUTBOUND,  value: "4" }
+        volumeMounts:
+          - name: caddy-template
+            mountPath: /templates/Caddyfile
+            # subPath : monte le seul fichier, ne masque pas le reste de /templates.
+            subPath: Caddyfile
+            readOnly: true
+          - { name: coraza-config, mountPath: /opt/coraza/config.d, readOnly: true }
+          # NE JAMAIS monter de volume sur /opt/coraza/config : cela masquerait
+          # coraza.conf et crs-setup.conf livrés par l'image.
+        readinessProbe:
+          # Caddy n'expose pas /healthz : une sonde HTTP partirait vers le backend
+          # et remonterait un 404.
+          tcpSocket: { port: 8090 }
+          periodSeconds: 5
+          failureThreshold: 2
+        startupProbe:
+          tcpSocket: { port: 8090 }
+          periodSeconds: 3
+          failureThreshold: 20      # chargement du CRS complet
+        resources:
+          requests: { cpu: "1", memory: 512Mi }
+          # Pas de limit CPU : le WAF est regex-bound, le throttling se paierait
+          # directement en p99.
+          limits: { memory: 1Gi }
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true         # ⚠️ retirer si l'image tourne en root
+          seccompProfile: { type: RuntimeDefault }
+          capabilities:
+            drop: ["ALL"]
+            # INDISPENSABLE. Le binaire caddy porte la file capability
+            # cap_net_bind_service=+ep ; avec drop:[ALL] seul, le kernel refuse
+            # l'execve d'un binaire « capability-dumb » → Operation not permitted.
+            # Vrai même si Caddy écoute sur 8090.
+            add: ["NET_BIND_SERVICE"]
+
+  # --- Service ---------------------------------------------------------------
+  service:
+    enabled: true
+    # Chart >= 34 : le type et le reste du ServiceSpec passent par `spec`.
+    # Il n'y a plus de `service.type` ni de `service.externalTrafficPolicy`.
+    spec:
+      type: NodePort
+      # Sans ça : SNAT par kube-proxy → perte de l'IP source.
+      # Corollaire : seuls les nœuds portant un pod répondent — cohérent avec
+      # le DaemonSet.
+      externalTrafficPolicy: Local
+
+  # --- Entrypoints -----------------------------------------------------------
+  ports:
+    web:
+      port: 8000
+      exposedPort: 80
+      expose: { default: true }
+      # nodePort:
+      http:
+        redirections:
+          entryPoint:
+            to: websecure
+            scheme: https
+            permanent: true
+
+    websecure:
+      port: 8443
+      exposedPort: 443
+      expose: { default: true }
+      # nodePort:
+      http3:
+        enabled: false
+      http:
+        tls:
+          enabled: true
+          # PAS de certResolver ni de domains : cert-manager reste seul maître
+          # du TLS, via les blocs `tls` des Ingress applicatifs.
+      # PAS de forwardedHeaders.trustedIPs ici, volontairement : Traefik doit
+      # ÉCRASER tout X-Forwarded-For entrant. C'est le premier maillon qui rend
+      # `ipStrategy.depth: 1` non usurpable en aval.
+
+    # Dashboard / ping — ne traverse pas le WAF.
+    traefik:
+      port: 8080
+      exposedPort: 8080
+      expose: { default: false }
+
+    # Metrics — ne traverse pas le WAF.
+    metrics:
+      port: 9100
+      exposedPort: 9100
+      expose: { default: false }
+
+  # L'entrypoint `internal` est déclaré ICI et pas dans `ports:` À DESSEIN :
+  #  - `ports:` génèrerait un containerPort et une entrée de Service, ce qui
+  #    rendrait le WAF contournable depuis le réseau du cluster ;
+  #  - la forme longue permet de forcer le bind sur 127.0.0.1.
+  # Le catch-all n'est PAS déclaré sur `internal` → pas de boucle.
+  additionalArguments:
+    - "--entryPoints.internal.address=127.0.0.1:8880"
+    # `internal` n'écoute que sur loopback : la seule source possible est le
+    # sidecar local, donc faire confiance au XFF entrant y est sans risque.
+    # C'est ce qui fait remonter la vraie IP client dans ClientHost.
+    - "--entryPoints.internal.forwardedHeaders.insecure=true"
+
+  # --- Providers -------------------------------------------------------------
+  providers:
+    kubernetesCRD:
+      enabled: true
+      # Requis par le Service ExternalName d'épinglage local (mode externalName).
+      # ⚠️ portée cluster-wide : tout IngressRoute pourra proxifier vers un hôte
+      #    arbitraire → restreindre la création d'IngressRoute par RBAC ou policy.
+      allowExternalNameServices: true
+      # allowCrossNamespace n'est PAS requis : le catch-all et le Service coraza
+      # vivent tous deux dans le namespace du release, et le template omet
+      # volontairement le champ `namespace` sur la référence de service.
+      allowCrossNamespace: false
+    kubernetesIngress:
+      enabled: true
+      # Les Ingress applicatifs ne sont pas modifiés : ils continuent de
+      # s'attacher à tous les entrypoints. Sur websecure la priorité du
+      # catch-all les court-circuite ; sur internal ils sont seuls.
+
+  # --- Observabilité ---------------------------------------------------------
+  # Chart >= 34 : `log` et `accessLog` sont deux clés de premier niveau ;
+  # il n'y a plus de `logs.general` / `logs.access`.
+  log:
+    level: INFO
+    format: json
+
+  accessLog:
+    # Nécessaire pour vérifier ClientHost, donc la propagation de l'IP client
+    # réelle jusqu'à l'entrypoint internal.
+    enabled: true
+    format: json
+
+  metrics:
+    prometheus:
+      entryPoint: metrics
+
+  # Ressources du conteneur Traefik lui-même (le sidecar a les siennes).
+  resources:
+    requests: { cpu: 500m, memory: 256Mi }
+    limits: { memory: 512Mi }
+
+  # Le dashboard passe par l'entrypoint traefik, hors WAF : le laisser fermé.
+  ingressRoute:
+    dashboard:
+      enabled: false
+
+  # Ne pas surcharger `podSecurityContext` à la légère :
+  # runAsUser/fsGroup y interagissent avec les emptyDir et l'admission des
+  # initContainers.

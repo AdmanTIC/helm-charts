@@ -1,0 +1,63 @@
+{{- $mode := .Values.coraza.service.mode -}}
+{{- if not (has $mode (list "externalName" "clusterIP")) -}}
+{{- fail (printf "coraza.service.mode doit valoir \"externalName\" ou \"clusterIP\", pas %q" $mode) -}}
+{{- end -}}
+{{- if eq $mode "externalName" }}
+# ---------------------------------------------------------------------------
+#  Épinglage local du WAF — variante ExternalName
+#
+#  Sans ça le trafic zigzague : le provider kubernetescrd répartit sur les
+#  ENDPOINTS et ignore le ClusterIP, donc `internalTrafficPolicy` n'est jamais
+#  consulté :
+#     Traefik-A (websecure) → Coraza-B (autre nœud) → Traefik-B (internal) → app
+#
+#  Un ExternalName n'a pas d'endpoints : Traefik résout le nom DNS, `localhost`
+#  → 127.0.0.1 → le sidecar du même pod.
+#
+#  Réserve assumée : sans endpoints, la readiness du sidecar ne gate plus le
+#  routage. Un sidecar KO donne un 502 au lieu d'un retrait d'endpoint.
+#  Le fail-closed est préservé (pas de contournement du WAF).
+#
+#  Requiert providers.kubernetesCRD.allowExternalNameServices=true.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.coraza.service.name }}
+  labels:
+    {{- include "traefik-coraza.labels" . | nindent 4 }}
+spec:
+  type: ExternalName
+  externalName: localhost
+  ports:
+    - name: coraza
+      port: {{ int .Values.coraza.port }}
+      targetPort: {{ int .Values.coraza.port }}
+      protocol: TCP
+{{- else }}
+# ---------------------------------------------------------------------------
+#  Épinglage local du WAF — variante ClusterIP + nativeLB
+#
+#  Garde la readiness du sidecar comme gate du routage, contrairement à
+#  l'ExternalName. En échange, l'épinglage repose sur DEUX conditions :
+#    - `internalTrafficPolicy: Local` ici ;
+#    - `nativeLB: true` sur le service de l'IngressRoute, sans quoi Traefik
+#      répartit sur les endpoints et court-circuite le ClusterIP.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.coraza.service.name }}
+  labels:
+    {{- include "traefik-coraza.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  internalTrafficPolicy: Local
+  selector:
+    {{- include "traefik-coraza.traefikSelector" . | nindent 4 }}
+  ports:
+    - name: coraza
+      port: {{ int .Values.coraza.port }}
+      targetPort: coraza
+      protocol: TCP
+{{- end }}
