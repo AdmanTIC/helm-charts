@@ -85,6 +85,8 @@ tolerations: []
 
 affinity: {}
 
+extraContainers: []
+
 persistence:
   enabled: false
   size: 100Mi
