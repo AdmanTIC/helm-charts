@@ -118,12 +118,12 @@ coraza:
       internalProbes: true
 
   # Règles maison. Plage d'ID réservée : 1000-1999 (1000-1006 et 1099 déjà pris
-  # par les exclusions livrées ci-dessus). Préférer `ctl:removeById` à
+  # par les exclusions livrées ci-dessus). Préférer `ctl:ruleRemoveById` à
   # `SecRuleRemoveById`. Regex RE2 uniquement.
   extraRules: |
     # Gabarit — exclure une règle sur un endpoint précis :
     #SecRule REQUEST_URI "@beginsWith /api/ingest" \
-    #    "id:1010,phase:1,pass,nolog,ctl:removeById=920420"
+    #    "id:1010,phase:1,pass,nolog,ctl:ruleRemoveById=920420"
 
     # --- RÈGLES DE TEST : décommenter temporairement, puis RETIRER ------------
     # Smoke test du chemin de refus, indépendant de SecRuleEngine (deny explicite).
@@ -140,7 +140,7 @@ coraza:
     # Réduction du bruit sur les assets statiques — NE PAS activer avant la fin
     # de l'analyse des faux positifs : supprime aussi la visibilité dessus.
     #SecRule REQUEST_URI "@rx \.(?:woff2?|ttf|eot|css|js|png|jpe?g|gif|svg|ico|map)$" \
-    #    "id:1006,phase:1,pass,nolog,ctl:removeById=980170,ctl:responseBodyAccess=Off"
+    #    "id:1006,phase:1,pass,nolog,ctl:ruleRemoveById=980170,ctl:responseBodyAccess=Off"
 
 # -----------------------------------------------------------------------------
 #  IngressRoute catch-all

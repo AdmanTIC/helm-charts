@@ -208,13 +208,13 @@ du rodage. Les exclusions se posent dans `coraza.extraRules` :
 coraza:
   extraRules: |
     SecRule REQUEST_URI "@beginsWith /api/ingest" \
-        "id:1000,phase:1,pass,nolog,ctl:removeById=920420"
+        "id:1000,phase:1,pass,nolog,ctl:ruleRemoveById=920420"
 ```
 
 Règles de rédaction :
 
 - IDs dans la plage **1000–1999** uniquement.
-- `ctl:removeById` et non `SecRuleRemoveById` : `config.d` est chargé *avant* le
+- `ctl:ruleRemoveById` et non `SecRuleRemoveById` : `config.d` est chargé *avant* le
   CRS, donc une directive de chargement n'a encore rien à retirer, alors que
   `ctl:` agit à l'exécution.
 - Regex **RE2** : pas de `(?!)`, `(?<!)`, `(?=)`, `(?<=)`, pas de backreference
