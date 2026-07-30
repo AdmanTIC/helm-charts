@@ -25,10 +25,31 @@ Identité des objets Traefik (alignée sur un install standalone) :
 {{- else }}
   ⚠️ vérification désactivée (standaloneNaming.expectedRelease vide).
 {{- end }}
-{{- if contains ":TAG" .Values.coraza.image }}
+{{- /* Le tag est écrit dans les deux tableaux de conteneurs, pas dans une valeur
+       unique (cf. en-tête de values.yaml). On lit donc l'image réellement rendue,
+       en tolérant l'absence : ces NOTES ne doivent jamais faire échouer le rendu. */}}
+{{- $initImg := "" }}
+{{- range (.Values.traefik.deployment.initContainers | default list) }}
+  {{- if eq (dig "name" "" .) "caddy-template-patch" }}{{ $initImg = dig "image" "" . }}{{ end }}
+{{- end }}
+{{- $sideImg := "" }}
+{{- range (.Values.traefik.deployment.additionalContainers | default list) }}
+  {{- if eq (dig "name" "" .) "coraza" }}{{ $sideImg = dig "image" "" . }}{{ end }}
+{{- end }}
 
-!! coraza.image vaut « {{ .Values.coraza.image }} » : le tag n'est PAS épinglé.
-   Le pod ne démarrera pas. Voir README.md § « Avant la première installation ».
+Image du WAF (le tag figure deux fois, c'est volontaire) :
+  initContainer  {{ $initImg | default "<introuvable>" }}
+  sidecar        {{ $sideImg | default "<introuvable>" }}
+{{- if and $initImg $sideImg (ne $initImg $sideImg) }}
+
+!! LES DEUX TAGS DIVERGENT. L'initContainer patche le template Caddyfile livré par
+   SON image et le sidecar consomme le résultat avec la SIENNE : le comportement
+   n'est pas déterministe. Aligner les deux dans values.yaml.
+{{- end }}
+{{- if or (contains ":TAG" $sideImg) (contains ":TAG" $initImg) }}
+
+!! Le tag n'est PAS épinglé (« :TAG »). Le pod ne démarrera pas.
+   Voir README.md § « Avant la première installation ».
 {{- end }}
 
 Vérifications à faire maintenant :

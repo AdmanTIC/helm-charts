@@ -135,23 +135,19 @@ fait qu'il n'y a qu'un ingress controller.
 
 ## Avant la première installation
 
-1. **Tag de l'image Coraza** — `coraza.image` vaut `…:TAG` et doit être épinglé
-   avant tout `helm install`. `latest` est exclu : l'initContainer patche un
-   template livré par l'image, une dérive silencieuse casserait le patch au pire
-   moment.
+1. **Tag de l'image Coraza** — il vaut `…:TAG` et doit être épinglé avant tout
+   `helm install`, **aux deux endroits** (voir la section suivante). `latest` est
+   exclu : l'initContainer patche un template livré par l'image, une dérive
+   silencieuse casserait le patch au pire moment.
 
-2. **UID du sidecar** — le `podSecurityContext` du chart impose
-   `runAsUser: 65532`, qui n'est pas forcément propriétaire de `/opt/coraza`, où
-   `/entrypoint.sh` écrit. Relever l'UID réel :
+2. **UID du sidecar** — fixé à `1000`, l'UID propriétaire de `/opt/coraza` dans
+   l'image, où `/entrypoint.sh` écrit au démarrage. C'est une surcharge au niveau
+   conteneur : le `podSecurityContext` du chart (`65532`) continue de s'appliquer
+   à Traefik et à l'initContainer. À revérifier si vous changez d'image :
 
    ```bash
    docker run --rm --entrypoint sh ghcr.io/coreruleset/coraza-crs:TAG -c 'ls -ldn /opt/coraza /opt/coraza/config'
    ```
-
-   Si le sidecar échoue sur un « permission denied », ajouter un `runAsUser`
-   explicite dans `traefik.deployment.additionalContainers[0].securityContext`.
-   Contrainte : la valeur doit rester différente de 0 (`runAsNonRoot: true` au
-   niveau du pod).
 
 3. **Middlewares IP existants** — aucun défaut global n'existe :
    chaque `Middleware` avec `ipAllowList` ou `rateLimit` doit porter
@@ -173,22 +169,35 @@ fait qu'il n'y a qu'un ingress controller.
          depth: 1
    ```
 
-## Le piège de l'ancre `&corazaImage`
+## Le tag de l'image est écrit deux fois
 
-`values.yaml` définit l'image une fois avec une ancre YAML et l'aliase dans
-l'initContainer et le sidecar. C'est délibéré : une divergence de tag produirait
-un template Caddyfile patché issu d'une version différente de celle qui le
-consomme.
+Dans `traefik.deployment.initContainers` (patch du Caddyfile) et dans
+`traefik.deployment.additionalContainers` (sidecar qui le consomme). Les deux
+doivent porter le **même** tag, sinon l'initContainer patche un template issu
+d'une version différente de celle qui le lit. `NOTES.txt` affiche les deux images
+au déploiement et signale une divergence.
 
-Conséquence à connaître : **les ancres sont résolues au parse du fichier, pas au
-merge Helm**. Un `--set coraza.image=…` ou un `-f` externe ne change *que* la
-valeur documentaire `coraza.image`, pas les deux conteneurs. Pour changer de tag,
-éditer `values.yaml`, ou surcharger explicitement les trois emplacements.
+Il n'existe pas de valeur unique possible : le chart Traefik rend ces tableaux
+avec `toYaml` **sans `tpl`**, donc aucune valeur du parent ne peut les alimenter,
+et le sidecar doit rester dans le pod Traefik pour joindre l'entrypoint loopback.
+Une ancre YAML tenait ce rôle avant ; elle a été retirée parce qu'elle est
+résolue au *parse* du fichier, donc invisible au merge Helm — elle donnait
+l'illusion d'un point unique de réglage.
 
-Même logique pour `coraza.configMapName` : le nom du ConfigMap est référencé
-littéralement dans `traefik.deployment.additionalVolumes`, parce que les values
-d'un subchart ne passent pas par le moteur de template. Changer l'un impose de
-changer l'autre.
+Deux conséquences pour ArgoCD et `-f` :
+
+- il n'y a rien à surcharger « en un point » ;
+- Helm **remplace** les listes au lieu de les fusionner. Un
+  `--set 'traefik.deployment.additionalContainers[0].image=…'` ne change pas le
+  tag : il réduit le sidecar à cette seule clé et supprime `name`, `env`,
+  `volumeMounts` et `NET_BIND_SERVICE`.
+
+Voie normale : éditer les deux tags dans `values.yaml` et bumper `version` dans
+`Chart.yaml`. Pour surcharger depuis l'extérieur, il faut redonner les deux
+tableaux **entiers**.
+
+Même logique pour `coraza.configMapName`, référencé littéralement dans
+`traefik.deployment.additionalVolumes`. Changer l'un impose de changer l'autre.
 
 ## Rodage des faux positifs
 
