@@ -1,0 +1,84 @@
+{{- /*
+=============================================================================
+ Garde-fou de nommage — ne rend aucun objet.
+
+ Objectif : pouvoir déployer ce chart À LA PLACE d'un release Traefik installé
+ en standalone, sans recréer d'objets.
+
+ Deux niveaux de contrainte, très inégaux :
+
+  - Les NOMS d'objets (DaemonSet, Service, ServiceAccount, ClusterRole…) sont
+    mutables au sens de l'API, mais un nom qui change fait que Helm crée un
+    nouvel objet et supprime l'ancien : coupure de service, et pour le Service
+    NodePort un nodePort réattribué.
+
+  - Les LABELS DE SÉLECTEUR (`app.kubernetes.io/name` + `.../instance`) sont
+    IMMUABLES sur un DaemonSet/Deployment. Le chart amont le dit lui-même dans
+    _helpers.tpl : « This is an immutable field: this should not change between
+    upgrade ». Une divergence ne dégrade pas, elle fait ÉCHOUER l'upgrade côté
+    API — après que Helm a déjà appliqué une partie du release.
+
+ D'où une vérification au rendu plutôt qu'une découverte en plein upgrade.
+*/ -}}
+{{- if .Values.standaloneNaming.expectedRelease -}}
+
+{{- $ns := include "traefik-coraza.tfNamespace" . -}}
+{{- $expected := .Values.standaloneNaming.expectedRelease -}}
+
+{{- $gotInstance := include "traefik-coraza.tfInstanceLabel" . -}}
+{{- $wantInstance := include "traefik-coraza.expectedInstanceLabel" . -}}
+{{- if ne $gotInstance $wantInstance -}}
+{{- fail (printf `
+Labels de sélecteur incompatibles avec un install standalone de Traefik.
+
+  app.kubernetes.io/instance rendu   : %s
+  app.kubernetes.io/instance attendu : %s
+
+Ce label fait partie de spec.selector.matchLabels, qui est IMMUABLE : en l'état
+l'upgrade échouera côté API, après application partielle du release.
+
+La cause est que le release de ce chart s'appelle %q alors que le release
+Traefik à remplacer s'appelle %q. Trois issues :
+
+  1. Nommer ce release comme l'existant — le plus simple, rien d'autre à régler :
+       helm upgrade %s . -n %s
+
+  2. Garder le nom de release actuel et figer le label :
+       --set traefik.instanceLabelOverride=%s
+
+  3. Déploiement neuf, sans Traefik existant à reprendre :
+       --set standaloneNaming.expectedRelease=""
+
+Relever la valeur réellement en place avant de choisir :
+  kubectl -n %s get daemonset,deployment -l app.kubernetes.io/name=%s \
+    -o jsonpath='{range .items[*]}{.kind}{"\t"}{.spec.selector.matchLabels}{"\n"}{end}'
+`
+  $gotInstance $wantInstance .Release.Name $expected
+  $expected $ns
+  $wantInstance
+  $ns (include "traefik-coraza.tfNameLabel" .)) -}}
+{{- end -}}
+
+{{- $gotFullname := include "traefik-coraza.tfFullname" . -}}
+{{- $wantFullname := include "traefik-coraza.expectedFullname" . -}}
+{{- if ne $gotFullname $wantFullname -}}
+{{- fail (printf `
+Noms d'objets incompatibles avec un install standalone de Traefik.
+
+  nom rendu   : %s
+  nom attendu : %s
+
+Les objets du subchart ne reprendraient pas ceux du release Traefik existant :
+Helm en créerait de nouveaux et supprimerait les anciens (coupure de service,
+et nodePort réattribué sur le Service NodePort).
+
+Corriger avec :
+  --set traefik.fullnameOverride=%s
+
+ou désactiver la vérification pour un déploiement neuf :
+  --set standaloneNaming.expectedRelease=""
+`
+  $gotFullname $wantFullname $wantFullname) -}}
+{{- end -}}
+
+{{- end -}}

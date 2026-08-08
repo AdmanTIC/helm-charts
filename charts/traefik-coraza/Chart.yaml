@@ -1,0 +1,36 @@
+apiVersion: v2
+name: traefik-coraza
+description: |
+  Traefik (chart officiel, en subchart) + WAF Coraza / OWASP CRS en montage
+  « sandwich » : websecure (TLS) → sidecar Coraza → entrypoint interne loopback
+  → Ingress applicatifs. cert-manager reste seul maître du TLS.
+type: application
+kubeVersion: ">=1.27.0-0"
+
+# version du chart wrapper
+version: 0.1.0
+# Version du CRS embarquée dans l'image Coraza, relevée en cluster
+# (OWASP_CRS/4.28.0). Purement documentaire : le tag réellement déployé est
+# `coraza.image` dans values.yaml, qui doit être épinglé à la main.
+appVersion: "4.28.0"
+
+keywords:
+  - traefik
+  - waf
+  - coraza
+  - owasp
+  - crs
+  - modsecurity
+
+maintainers:
+  - name: AdmanTIC
+
+dependencies:
+  # Chart officiel. Version relevée le 2026-07-29 (`helm search repo
+  # traefik/traefik --versions`) : 41.0.2 → Traefik v3.7.6.
+  # Épinglé volontairement, pas de range : la syntaxe de règles v3 et les clés
+  # d'override de values.yaml sont validées contre CETTE version.
+  - name: traefik
+    version: "41.0.2"
+    repository: https://traefik.github.io/charts
+    condition: traefik.enabled

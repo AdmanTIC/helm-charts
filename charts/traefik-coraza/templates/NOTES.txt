@@ -1,0 +1,77 @@
+traefik-coraza {{ .Chart.Version }} — WAF Coraza / OWASP CRS {{ .Chart.AppVersion }} devant Traefik
+
+Chemin du trafic :
+
+  VIP → NodePort :443  websecure (TLS, cert-manager)
+          └─ IngressRoute {{ .Values.catchAll.name }}, priority {{ int .Values.catchAll.priority }}
+               → sidecar coraza :{{ int .Values.coraza.port }}   (inspection req + resp)
+                    → 127.0.0.1:8880  entrypoint « internal » (HTTP, loopback)
+                         → Ingress applicatifs → pods
+
+État du moteur : SecRuleEngine {{ .Values.coraza.config.ruleEngine }}
+{{- if eq .Values.coraza.config.ruleEngine "DetectionOnly" }}
+  → détection seule, rien n'est bloqué. Normal pendant le rodage des faux positifs.
+{{- else }}
+  → BLOCAGE ACTIF. Vérifier que le rodage des faux positifs est terminé.
+{{- end }}
+Épinglage local : coraza.service.mode = {{ .Values.coraza.service.mode }}
+
+Identité des objets Traefik (alignée sur un install standalone) :
+  noms                       {{ include "traefik-coraza.tfFullname" . }}  /  {{ include "traefik-coraza.tfFullname" . }}-{{ include "traefik-coraza.tfNamespace" . }} (RBAC)
+  app.kubernetes.io/name     {{ include "traefik-coraza.tfNameLabel" . }}
+  app.kubernetes.io/instance {{ include "traefik-coraza.tfInstanceLabel" . }}   <- immuable
+{{- if .Values.standaloneNaming.expectedRelease }}
+  vérifié contre un standalone nommé « {{ .Values.standaloneNaming.expectedRelease }} » dans ce namespace.
+{{- else }}
+  ⚠️ vérification désactivée (standaloneNaming.expectedRelease vide).
+{{- end }}
+{{- /* Le tag est écrit dans les deux tableaux de conteneurs, pas dans une valeur
+       unique (cf. en-tête de values.yaml). On lit donc l'image réellement rendue,
+       en tolérant l'absence : ces NOTES ne doivent jamais faire échouer le rendu. */}}
+{{- $initImg := "" }}
+{{- range (.Values.traefik.deployment.initContainers | default list) }}
+  {{- if eq (dig "name" "" .) "caddy-template-patch" }}{{ $initImg = dig "image" "" . }}{{ end }}
+{{- end }}
+{{- $sideImg := "" }}
+{{- range (.Values.traefik.deployment.additionalContainers | default list) }}
+  {{- if eq (dig "name" "" .) "coraza" }}{{ $sideImg = dig "image" "" . }}{{ end }}
+{{- end }}
+
+Image du WAF (le tag figure deux fois, c'est volontaire) :
+  initContainer  {{ $initImg | default "<introuvable>" }}
+  sidecar        {{ $sideImg | default "<introuvable>" }}
+{{- if and $initImg $sideImg (ne $initImg $sideImg) }}
+
+!! LES DEUX TAGS DIVERGENT. L'initContainer patche le template Caddyfile livré par
+   SON image et le sidecar consomme le résultat avec la SIENNE : le comportement
+   n'est pas déterministe. Aligner les deux dans values.yaml.
+{{- end }}
+{{- if or (contains ":TAG" $sideImg) (contains ":TAG" $initImg) }}
+
+!! Le tag n'est PAS épinglé (« :TAG »). Le pod ne démarrera pas.
+   Voir README.md § « Avant la première installation ».
+{{- end }}
+
+Vérifications à faire maintenant :
+
+1. Le CRS est chargé et Coraza écoute :
+     kubectl -n {{ .Release.Namespace }} logs ds/traefik -c coraza | head -50
+
+2. Le Caddyfile a bien été patché (bloc global servers + header_up) :
+     kubectl -n {{ .Release.Namespace }} logs ds/traefik -c caddy-template-patch
+   L'initContainer échoue bruyamment si les ancres du template amont ont bougé.
+
+3. L'IP client réelle remonte de bout en bout — `client_ip` côté Caddy doit être
+   l'IP publique du client, pas une IP de pod, et la sonde id:1099 doit rester
+   muette :
+     kubectl -n {{ .Release.Namespace }} logs ds/traefik -c coraza | grep -i client_ip
+     kubectl -n {{ .Release.Namespace }} logs ds/traefik -c coraza | grep 1099
+
+4. Les entrées d'audit "transaction" : si elles
+   manquent, basculer temporairement coraza.config.audit.engine sur "On" pour
+   discriminer « directive écrasée » vs « sémantique RelevantOnly incomplète ».
+
+5. Middlewares IP existants — il n'y a PAS de défaut global, chaque middleware
+   doit porter ipStrategy.depth: 1, sinon il compare le pair TCP (127.0.0.1)
+   et renvoie 403 :
+     kubectl get middlewares -A -o json | jq -r '.items[] | select(.spec.ipAllowList or .spec.rateLimit) | "\(.metadata.namespace)/\(.metadata.name)"'

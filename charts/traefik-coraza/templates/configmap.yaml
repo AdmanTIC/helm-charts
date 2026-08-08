@@ -1,0 +1,86 @@
+{{- $c := .Values.coraza.config -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  # Nom fixe : référencé littéralement dans traefik.deployment.additionalVolumes.
+  name: {{ .Values.coraza.configMapName }}
+  labels:
+    {{- include "traefik-coraza.labels" . | nindent 4 }}
+data:
+  # Monté sur /opt/coraza/config.d/
+  #
+  # ORDRE D'INCLUSION, relevé sur le template Caddyfile de l'image :
+  #   coraza.conf → config.d/*.conf → crs-setup.conf → … → CRS → … → overrides/
+  #
+  # Donc :
+  #   - SecRuleEngine / SecAuditLog* / SecResponseBody* écrasent bien coraza.conf ✅
+  #   - les SecRule … ctl: fonctionnent (ctl: agit à l'exécution, pas au chargement) ✅
+  #   - un setvar:tx.blocking_paranoia_level ici serait ÉCRASÉ par crs-setup.conf ❌
+  #     → passer par les variables d'environnement (overrides/) ou rules.d
+  #   - NE JAMAIS ajouter d'Include du CRS ici : le template le charge déjà
+  #     (sinon : « there is another rule with id 900000 »)
+  #
+  # Toute regex doit être RE2-compatible : pas de lookahead/lookbehind/backreference.
+  #
+  # NOTE AUX MAINTENEURS : `int` est obligatoire sur les tailles. Helm parse les
+  # nombres en float64 et rendrait 13107200 en « 1.31072e+07 », que Coraza refuse.
+  custom.conf: |
+    SecRuleEngine {{ $c.ruleEngine }}
+
+    SecRequestBodyAccess {{ $c.requestBodyAccess }}
+    SecRequestBodyLimit {{ int $c.requestBodyLimit }}
+    SecRequestBodyNoFilesLimit {{ int $c.requestBodyNoFilesLimit }}
+    SecRequestBodyLimitAction {{ $c.requestBodyLimitAction }}
+
+    # Le sandwich rend les phases 3/4 : les règles RESPONSE-* du CRS sont actives.
+    # C'est le gain de ce montage par rapport à ForwardAuth ou au plugin WASM.
+    SecResponseBodyAccess {{ $c.responseBodyAccess }}
+    SecResponseBodyMimeType {{ $c.responseBodyMimeType }}
+    SecResponseBodyLimit {{ int $c.responseBodyLimit }}
+    SecResponseBodyLimitAction {{ $c.responseBodyLimitAction }}
+
+    SecAuditEngine {{ $c.audit.engine }}
+    # RE2 : pas de (?!…). Tous les 5xx + tous les 4xx sauf 404.
+    SecAuditLogRelevantStatus "{{ $c.audit.relevantStatus }}"
+    SecAuditLogParts {{ $c.audit.parts }}
+    SecAuditLog {{ $c.audit.target }}
+    SecAuditLogFormat {{ $c.audit.format }}
+{{- if contains "I" $c.audit.parts }}
+    # ⚠️ La partie I embarque le corps de requête → secrets, tokens et données
+    # personnelles poussés dans la stack de logs. À retirer après le rodage, ou :
+    # SecAuditLogSanitizeArg password,token,authorization
+{{- end }}
+{{ if $c.builtinExclusions.internalProbes }}
+    # --- sondes kubelet et accès par IP interne ---
+    SecRule REQUEST_URI "@beginsWith /healthz" \
+      "id:1004,phase:1,pass,nolog,ctl:ruleEngine=Off,ctl:auditEngine=Off"
+    # Host numérique interne : neutralise 920350 sans le désactiver pour l'externe
+    # (un Host numérique venant d'Internet reste un signal de scan à conserver).
+    SecRule REQUEST_HEADERS:Host "@rx ^\d{1,3}(\.\d{1,3}){3}(:\d+)?$" \
+      "id:1005,phase:1,pass,nolog,ctl:ruleRemoveById=920350"
+{{ end }}
+{{- if $c.builtinExclusions.acmeChallenge }}
+    # --- ACME http-01 : cert-manager en dépend, ne jamais inspecter ---
+    SecRule REQUEST_URI "@beginsWith /.well-known/acme-challenge/" \
+      "id:1000,phase:1,pass,nolog,ctl:ruleEngine=Off"
+{{ end }}
+{{- if $c.builtinExclusions.streamingProtocols }}
+    # --- streaming : l'inspection de corps casse WebSocket / gRPC / SSE ---
+    SecRule REQUEST_HEADERS:Upgrade "@streq websocket" \
+      "id:1001,phase:1,pass,nolog,ctl:requestBodyAccess=Off,ctl:responseBodyAccess=Off"
+    SecRule REQUEST_HEADERS:Content-Type "@beginsWith application/grpc" \
+      "id:1002,phase:1,pass,nolog,ctl:requestBodyAccess=Off,ctl:responseBodyAccess=Off"
+    SecRule REQUEST_HEADERS:Accept "@contains text/event-stream" \
+      "id:1003,phase:1,pass,nolog,ctl:responseBodyAccess=Off"
+{{ end }}
+{{- if $c.clientIpProbe.enabled }}
+    # --- sonde : doit rester MUETTE ---
+    # Si elle se déclenche, Coraza ne voit pas l'IP client réelle et toutes les
+    # règles IP du CRS ainsi que les audit logs sont sans valeur.
+    SecRule REMOTE_ADDR "@ipMatch {{ $c.clientIpProbe.privateRanges }}" \
+      "id:1099,phase:1,pass,log,msg:'IP client non resolue: %{REMOTE_ADDR}'"
+{{ end }}
+{{- with .Values.coraza.extraRules }}
+    # ------------------------------------------ règles maison (ID 1000-1999)
+{{ . | indent 4 }}
+{{- end }}
