@@ -37,8 +37,15 @@
 #  puis reporter ce tag aux TROIS emplacements de values.yaml (initContainer,
 #  sidecar, reloader) et passer `coraza.imageSupportsPhase4` à true.
 #
-#  À suivre en amont : la correction tient en un `/v2` dans le Dockerfile de
-#  coreruleset/coraza-crs-docker.
+#  Pourquoi pas d'image officielle : `docker-bake.hcl` amont épingle pourtant
+#  bien coraza-caddy v2.5.0 et le passe en `CORAZA_VERSION`, mais
+#  `caddy/Dockerfile` ne déclare aucun `ARG CORAZA_VERSION` et construit le
+#  chemin de module v1. L'argument est ignoré, toutes les images publiées
+#  embarquent v1.2.2, et aucun tag plus récent n'y changera rien. Correction
+#  amont, deux lignes :
+#      ARG CORAZA_VERSION
+#      RUN xcaddy build --with github.com/corazawaf/coraza-caddy/v2@${CORAZA_VERSION}
+#  Une fois publiée : reprendre le tag officiel et supprimer ce répertoire.
 # =============================================================================
 
 ARG BASE=ghcr.io/coreruleset/coraza-crs:4.28.0-caddy-alpine-202607180107

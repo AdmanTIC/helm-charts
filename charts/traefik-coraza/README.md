@@ -284,8 +284,45 @@ Les `CORAZA_DEFAULT_PHASE{1,2}_ACTION` déjà posées sur le sidecar sont
 le `SecDefaultAction` de `crs-setup.conf`, et les versions récentes refusent les
 actions de métadonnée à cet endroit — le conteneur ne démarre pas du tout.
 
-La correction amont tient en un `/v2` dans le Dockerfile de
-`coreruleset/coraza-crs-docker`.
+### Pourquoi pas une image officielle
+
+Il n'en existe pas qui convienne, et **aucun tag plus récent n'y changera rien** :
+le défaut est dans la recette de construction, pas dans une version.
+
+`coreruleset/coraza-crs-docker` épingle pourtant bien la bonne version. Son
+`docker-bake.hcl` déclare
+
+```hcl
+variable "coraza-version" {
+    # renovate: depName=corazawaf/coraza-caddy datasource=github-releases
+    default = "v2.5.0"
+}
+```
+
+et la passe au build comme `CORAZA_VERSION`. Mais `caddy/Dockerfile` ne déclare
+aucun `ARG CORAZA_VERSION`, ne l'utilise nulle part, et construit
+`--with github.com/corazawaf/coraza-caddy` — chemin de module **v1**. L'argument
+est donc ignoré : Renovate met consciencieusement à jour un pin sans effet
+(PR #37 → v2.1.0, PR #64 → v2.5.0) pendant que toutes les images publiées
+embarquent v1.2.2. Vérifié sur le tag épinglé ici avec `caddy build-info`.
+
+La correction amont tient en deux lignes — déclarer l'`ARG` et l'utiliser :
+
+```dockerfile
+ARG CORAZA_VERSION
+RUN xcaddy build --with github.com/corazawaf/coraza-caddy/v2@${CORAZA_VERSION}
+```
+
+Une fois cette correction publiée, il n'y aura plus rien à maintenir ici :
+reprendre le tag officiel et supprimer `image/`.
+
+Les autres variantes du même dépôt ne sont pas des porte-de-sortie : `nginx`
+s'appuie sur `libcoraza` (moteur Go, hôte C) mais reste nginx, écarté par
+l'architecture ; `apache` l'est pour la même raison. Les autres hôtes officiels
+de Coraza — Envoy + `coraza-proxy-wasm`, HAProxy + `coraza-spoa` — remplaceraient
+Caddy et le montage entier. `corazawaf/coraza-caddy` ne publie ni image ni
+binaire (aucun asset de release), il n'y a donc pas non plus de binaire officiel
+à injecter au démarrage.
 
 ## Rechargement à chaud de la configuration
 
