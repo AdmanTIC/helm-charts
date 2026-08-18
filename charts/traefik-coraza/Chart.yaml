@@ -8,10 +8,10 @@ type: application
 kubeVersion: ">=1.27.0-0"
 
 # version du chart wrapper
-version: 0.1.0
-# Version du CRS embarquée dans l'image Coraza, relevée en cluster
-# (OWASP_CRS/4.28.0). Purement documentaire : le tag réellement déployé est
-# `coraza.image` dans values.yaml, qui doit être épinglé à la main.
+version: 0.2.0
+# Version du CRS embarquée dans l'image Coraza (OWASP_CRS/4.28.0). Purement
+# documentaire : le tag réellement déployé est écrit dans values.yaml, à un
+# emplacement par conteneur, et doit être épinglé à la main.
 appVersion: "4.28.0"
 
 keywords:
