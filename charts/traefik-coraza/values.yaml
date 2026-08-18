@@ -253,6 +253,12 @@ traefik:
       # Template Caddyfile patché, produit par l'initContainer.
       - name: caddy-template
         emptyDir: {}
+      # Caddyfile FINAL, généré par l'entrypoint du sidecar (envsubst + caddy fmt).
+      # Partagé pour que le conteneur `coraza-reload` puisse le relire et le
+      # renvoyer à l'API admin — il n'a pas d'autre moyen d'y accéder, les
+      # systèmes de fichiers des conteneurs d'un pod étant cloisonnés.
+      - name: caddy-etc
+        emptyDir: {}
       # Nos directives Sec*.
       - name: coraza-config
         configMap:
@@ -359,6 +365,10 @@ traefik:
             subPath: Caddyfile
             readOnly: true
           - { name: coraza-config, mountPath: /opt/coraza/config.d, readOnly: true }
+          # Partagé avec `coraza-reload`, qui a besoin du Caddyfile rendu.
+          # L'entrypoint le régénère à chaque démarrage : l'emptyDir vide au
+          # premier boot n'est pas un problème.
+          - { name: caddy-etc, mountPath: /etc/caddy }
           # NE JAMAIS monter de volume sur /opt/coraza/config : cela masquerait
           # coraza.conf et crs-setup.conf livrés par l'image.
         readinessProbe:
@@ -392,6 +402,80 @@ traefik:
             # cap_net_bind_service=+ep ; avec drop:[ALL] seul, le kernel refuse
             # l'execve d'un binaire « capability-dumb » → Operation not permitted.
             # Vrai même si Caddy écoute sur 8090.
+            add: ["NET_BIND_SERVICE"]
+
+      # --- rechargement à chaud de la config Coraza ----------------------------
+      # Sans lui, une modification de la ConfigMap `coraza-config` n'a AUCUN
+      # effet tant que le pod n'est pas recréé : le fichier monté change bien,
+      # mais Coraza ne lit ses `include` qu'au provisioning du module Caddy.
+      #
+      # Mécanique, vérifiée en local de bout en bout :
+      #  1. l'API admin de Caddy écoute sur 127.0.0.1:2019 ; les conteneurs d'un
+      #     pod partageant la pile réseau, ce conteneur-ci l'atteint en loopback
+      #     sans exposer quoi que ce soit hors du pod ;
+      #  2. `--force` est INDISPENSABLE : Caddy compare le JSON adapté, pas les
+      #     fichiers inclus. Sans lui il répond « config is unchanged » et ne
+      #     recharge rien, puisque le Caddyfile, lui, n'a pas bougé ;
+      #  3. le rechargement est gracieux (« eternal grace period ») : les
+      #     connexions en cours sont préservées, aucune requête n'est perdue.
+      #
+      # Si le rechargement échoue (règle invalide), la configuration EN VIGUEUR
+      # reste l'ancienne — fail-safe — et la boucle réessaie à chaque tour tant
+      # que le contenu n'a pas de nouveau changé.
+      #
+      # Pour désactiver le rechargement à chaud : supprimer ce conteneur ET le
+      # volume `caddy-etc`. Les modifications de config ne seront alors prises
+      # en compte qu'au redémarrage du pod (`kubectl rollout restart`).
+      - name: coraza-reload
+        # ⚠️ MÊME TAG que les deux autres conteneurs (cf. en-tête du fichier).
+        #    Le binaire `caddy` de cette image sert de client de l'API admin ;
+        #    une version divergente adapterait le Caddyfile différemment de
+        #    celle qui l'exécute.
+        image: ghcr.io/coreruleset/coraza-crs:4.28.0-caddy-alpine-202607180107
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            set -u
+            # Latence totale = période kubelet de propagation de la ConfigMap
+            # (~1 min) + cet intervalle.
+            interval=10
+            prev=""
+            while :; do
+              cur=$(cat /opt/coraza/config.d/*.conf 2>/dev/null | md5sum | cut -d' ' -f1)
+              if [ -z "$prev" ]; then
+                prev=$cur
+                echo "config.d suivie, empreinte initiale $cur"
+              elif [ "$cur" != "$prev" ]; then
+                echo "config.d modifiée ($prev -> $cur), rechargement de Caddy"
+                if caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile \
+                                --address 127.0.0.1:2019 --force; then
+                  echo "rechargement appliqué"
+                  prev=$cur
+                else
+                  # `prev` n'est PAS mis à jour : nouvelle tentative au tour
+                  # suivant. Le WAF continue de tourner sur l'ancienne config.
+                  echo "RECHARGEMENT REFUSÉ — le WAF tourne toujours sur la configuration précédente" >&2
+                fi
+              fi
+              sleep $interval
+            done
+        volumeMounts:
+          - { name: coraza-config, mountPath: /opt/coraza/config.d, readOnly: true }
+          - { name: caddy-etc, mountPath: /etc/caddy, readOnly: true }
+        resources:
+          requests: { cpu: 5m, memory: 32Mi }
+          limits: { memory: 64Mi }
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          seccompProfile: { type: RuntimeDefault }
+          capabilities:
+            drop: ["ALL"]
+            # Même raison que pour le sidecar : le binaire caddy porte la file
+            # capability cap_net_bind_service=+ep, son execve échoue sinon.
             add: ["NET_BIND_SERVICE"]
 
   # --- Service ---------------------------------------------------------------

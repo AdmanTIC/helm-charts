@@ -279,6 +279,43 @@ actions de métadonnée à cet endroit — le conteneur ne démarre pas du tout.
 La correction amont tient en un `/v2` dans le Dockerfile de
 `coreruleset/coraza-crs-docker`.
 
+## Rechargement à chaud de la configuration
+
+Modifier `coraza.config` ou `coraza.extraRules` met à jour la ConfigMap, donc le
+fichier monté — mais **Coraza ne relit ses `include` qu'au provisioning du
+module Caddy**. Sans mécanisme dédié, un `helm upgrade` ne change rien tant que
+le pod n'est pas recréé, ce qui coupe le trafic du nœud sur un DaemonSet.
+
+Le conteneur `coraza-reload` (dans `traefik.deployment.additionalContainers`)
+supprime ce redémarrage :
+
+1. il surveille l'empreinte de `/opt/coraza/config.d/*.conf` ;
+2. au changement, il appelle l'API admin de Caddy — `127.0.0.1:2019`, atteignable
+   parce que les conteneurs d'un pod partagent la pile réseau, et jamais exposée
+   hors du pod ;
+3. `caddy reload --force`. Le `--force` n'est pas optionnel : Caddy compare le
+   **JSON adapté**, pas les fichiers inclus. Le Caddyfile n'ayant pas bougé, sans
+   `--force` il répond `config is unchanged` et ne recharge rien.
+
+Le rechargement est gracieux : les connexions en cours sont préservées. Si la
+nouvelle configuration est invalide, le rechargement est refusé, le WAF continue
+sur la précédente et la boucle réessaie — l'échec est journalisé,
+`kubectl logs … -c coraza-reload`.
+
+Latence : propagation kubelet de la ConfigMap (~1 min) + l'intervalle de la
+boucle (10 s).
+
+C'est aussi la raison du volume `caddy-etc` : le reloader a besoin du Caddyfile
+**rendu** par l'entrypoint du sidecar, et les systèmes de fichiers des
+conteneurs d'un pod sont cloisonnés.
+
+**Pour s'en passer** — infrastructures où un changement de configuration doit
+passer par un redémarrage explicite et daté : supprimer le conteneur
+`coraza-reload` et le volume `caddy-etc` des values. `NOTES.txt` le détecte et
+rappelle alors la commande de redémarrage. Un `helm upgrade` seul ne recréera
+pas les pods : il faut un
+`kubectl -n <ns> rollout restart daemonset/traefik`.
+
 ## Limites connues
 
 - **Règles à état non fiables.** Les collections `IP` / `SESSION` / `USER` de

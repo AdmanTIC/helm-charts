@@ -41,23 +41,30 @@ Identité des objets Traefik (alignée sur un install standalone) :
   {{- if eq (dig "name" "" .) "caddy-template-patch" }}{{ $initImg = dig "image" "" . }}{{ end }}
 {{- end }}
 {{- $sideImg := "" }}
+{{- $reloadImg := "" }}
 {{- range (.Values.traefik.deployment.additionalContainers | default list) }}
   {{- if eq (dig "name" "" .) "coraza" }}{{ $sideImg = dig "image" "" . }}{{ end }}
+  {{- if eq (dig "name" "" .) "coraza-reload" }}{{ $reloadImg = dig "image" "" . }}{{ end }}
 {{- end }}
+{{- $imgs := compact (list $initImg $sideImg $reloadImg) }}
 
-Image du WAF (le tag figure deux fois, c'est volontaire) :
+Image du WAF (le tag figure une fois par conteneur, c'est volontaire) :
   initContainer  {{ $initImg | default "<introuvable>" }}
   sidecar        {{ $sideImg | default "<introuvable>" }}
-{{- if and $initImg $sideImg (ne $initImg $sideImg) }}
+  reloader       {{ $reloadImg | default "<absent : rechargement à chaud désactivé>" }}
+{{- if gt (len (uniq $imgs)) 1 }}
 
-!! LES DEUX TAGS DIVERGENT. L'initContainer patche le template Caddyfile livré par
-   SON image et le sidecar consomme le résultat avec la SIENNE : le comportement
-   n'est pas déterministe. Aligner les deux dans values.yaml.
+!! LES TAGS DIVERGENT. L'initContainer patche le template Caddyfile livré par SON
+   image, le sidecar consomme le résultat avec la SIENNE et le reloader réadapte
+   le Caddyfile avec la sienne encore : le comportement n'est pas déterministe.
+   Aligner les trois dans values.yaml.
 {{- end }}
-{{- if or (contains ":TAG" $sideImg) (contains ":TAG" $initImg) }}
+{{- range $imgs }}
+  {{- if contains ":TAG" . }}
 
 !! Le tag n'est PAS épinglé (« :TAG »). Le pod ne démarrera pas.
    Voir README.md § « Avant la première installation ».
+  {{- end }}
 {{- end }}
 {{- if not .Values.coraza.imageSupportsPhase4 }}
 
@@ -70,6 +77,12 @@ Image du WAF (le tag figure deux fois, c'est volontaire) :
    dont le binaire Caddy embarque coraza-caddy >= v2.
    Correctif et procédure : README.md § « Inspection des réponses (phase 4) ».
    La protection des REQUÊTES (phases 1 et 2, l'essentiel du CRS) fonctionne.
+{{- end }}
+{{- if not $reloadImg }}
+
+!! Rechargement à chaud désactivé (conteneur `coraza-reload` absent). Une
+   modification de la ConfigMap n'aura aucun effet avant un
+   `kubectl -n {{ .Release.Namespace }} rollout restart daemonset/{{ include "traefik-coraza.tfFullname" . }}`.
 {{- end }}
 
 Vérifications à faire maintenant :
@@ -92,7 +105,15 @@ Vérifications à faire maintenant :
    image reconstruite avec coraza-caddy/v2 les produit sans autre changement.
    Inutile de chercher du côté de SecAuditEngine RelevantOnly.
 
-5. Middlewares IP existants — il n'y a PAS de défaut global, chaque middleware
+5. Rechargement à chaud de la config Coraza — après un `helm upgrade` qui
+   modifie la ConfigMap, le conteneur `coraza-reload` doit journaliser
+   « rechargement appliqué » dans la minute qui suit (propagation kubelet) :
+     kubectl -n {{ .Release.Namespace }} logs ds/{{ include "traefik-coraza.tfFullname" . }} -c coraza-reload
+   Un « RECHARGEMENT REFUSÉ » signale une règle invalide : le WAF continue de
+   tourner sur la configuration précédente, il n'y a pas de coupure, mais la
+   ConfigMap et la config en vigueur ont divergé.
+
+6. Middlewares IP existants — il n'y a PAS de défaut global, chaque middleware
    doit porter ipStrategy.depth: 1, sinon il compare le pair TCP (127.0.0.1)
    et renvoie 403 :
      kubectl get middlewares -A -o json | jq -r '.items[] | select(.spec.ipAllowList or .spec.rateLimit) | "\(.metadata.namespace)/\(.metadata.name)"'
