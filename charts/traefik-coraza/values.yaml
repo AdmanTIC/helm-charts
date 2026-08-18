@@ -66,6 +66,10 @@ coraza:
     selector: {}
 
   # --- directives Sec* poussées dans /opt/coraza/config.d/custom.conf ---------
+  # ⚠️ YAML 1.1 (celui de Helm) résout `On`, `Off`, `Yes`, `No` NON QUOTÉS en
+  #    booléens. Le chart les reconvertit (helper `secFlag`), mais garder les
+  #    guillemets reste la bonne habitude : c'est ce qui se lit dans le fichier
+  #    qui doit correspondre à ce qui atterrit dans custom.conf.
   config:
     # Rester en DetectionOnly jusqu'à la fin du rodage des faux positifs.
     ruleEngine: DetectionOnly

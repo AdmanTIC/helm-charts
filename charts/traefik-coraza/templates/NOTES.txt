@@ -8,9 +8,17 @@ Chemin du trafic :
                     → 127.0.0.1:8880  entrypoint « internal » (HTTP, loopback)
                          → Ingress applicatifs → pods
 
-État du moteur : SecRuleEngine {{ .Values.coraza.config.ruleEngine }}
-{{- if eq .Values.coraza.config.ruleEngine "DetectionOnly" }}
+{{- /* Normalisation obligatoire : `ruleEngine: On` non quoté arrive ici en
+       booléen (YAML 1.1), et une comparaison bool vs string fait échouer le
+       rendu — erreur remontée telle quelle par ArgoCD. */}}
+{{- $ruleEngine := include "traefik-coraza.secFlag" .Values.coraza.config.ruleEngine }}
+État du moteur : SecRuleEngine {{ $ruleEngine }}
+{{- if eq $ruleEngine "DetectionOnly" }}
   → détection seule, rien n'est bloqué. Normal pendant le rodage des faux positifs.
+  → un `deny` explicite n'est PAS appliqué non plus : DetectionOnly neutralise
+    l'action disruptive de TOUTES les règles, y compris les vôtres.
+{{- else if eq $ruleEngine "Off" }}
+  → MOTEUR ARRÊTÉ. Aucune règle n'est évaluée, le WAF ne fait que proxifier.
 {{- else }}
   → BLOCAGE ACTIF. Vérifier que le rodage des faux positifs est terminé.
 {{- end }}

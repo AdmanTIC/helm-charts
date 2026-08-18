@@ -83,3 +83,39 @@ app.kubernetes.io/name: {{ include "traefik-coraza.tfNameLabel" . }}
 app.kubernetes.io/instance: {{ include "traefik-coraza.tfInstanceLabel" . }}
 {{- end -}}
 {{- end -}}
+
+{{/*
+=============================================================================
+ Normalisation des directives Sec* à valeur On/Off.
+
+ YAML 1.1 — celui que parse Helm — résout `On`, `Off`, `Yes`, `No` en
+ BOOLÉENS. Un `ruleEngine: On` non quoté dans les values arrive donc ici en
+ `true`, ce qui rendait `SecRuleEngine true` dans la ConfigMap (refusé par
+ Coraza) et faisait échouer les `eq …  "DetectionOnly"` de NOTES.txt sur une
+ comparaison bool vs string — erreur de template visible dans ArgoCD.
+
+ Ce helper reconvertit : true → On, false → Off, tout le reste inchangé.
+ Toute valeur On/Off issue des values DOIT passer par ici.
+=============================================================================
+*/}}
+{{- define "traefik-coraza.secFlag" -}}
+{{- if kindIs "bool" . -}}
+{{- ternary "On" "Off" . -}}
+{{- else -}}
+{{- toString . -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Idem, mais pour les directives à trois états (SecRuleEngine, SecAuditEngine) :
+normalise puis valide, plutôt que de laisser Coraza refuser sa configuration
+au démarrage du sidecar — donc après le déploiement.
+Argument : (dict "value" <valeur> "directive" <nom> "allowed" (list …))
+*/}}
+{{- define "traefik-coraza.secEnum" -}}
+{{- $v := include "traefik-coraza.secFlag" .value -}}
+{{- if not (has $v .allowed) -}}
+{{- fail (printf "\n\n%s : valeur invalide %q (normalisée en %q).\nAttendu : %s.\n\nRappel : YAML 1.1 résout On/Off/Yes/No en booléens ; le chart les\nreconvertit en On/Off, mais toute autre valeur doit être écrite\nexactement, entre guillemets de préférence.\n" .directive .value $v (join ", " .allowed)) -}}
+{{- end -}}
+{{- $v -}}
+{{- end -}}
