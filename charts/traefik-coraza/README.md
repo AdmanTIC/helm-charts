@@ -313,6 +313,10 @@ ARG CORAZA_VERSION
 RUN xcaddy build --with github.com/corazawaf/coraza-caddy/v2@${CORAZA_VERSION}
 ```
 
+Construit en local : le binaire obtenu embarque bien coraza-caddy v2.5.0 et
+coraza v3.7.0, soit exactement la version que le `docker-bake.hcl` amont croit
+déjà livrer.
+
 Une fois cette correction publiée, il n'y aura plus rien à maintenir ici :
 reprendre le tag officiel et supprimer `image/`.
 

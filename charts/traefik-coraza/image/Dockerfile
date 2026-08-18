@@ -45,6 +45,7 @@
 #  amont, deux lignes :
 #      ARG CORAZA_VERSION
 #      RUN xcaddy build --with github.com/corazawaf/coraza-caddy/v2@${CORAZA_VERSION}
+#  Construit en local : donne bien coraza-caddy v2.5.0 / coraza v3.7.0.
 #  Une fois publiée : reprendre le tag officiel et supprimer ce répertoire.
 # =============================================================================
 
