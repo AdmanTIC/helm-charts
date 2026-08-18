@@ -65,6 +65,25 @@ coraza:
     # ⚠️ confirmer avec `kubectl get pod -n <ns> --show-labels`.
     selector: {}
 
+  # --- inspection des réponses (phase 4) -------------------------------------
+  # L'image amont `ghcr.io/coreruleset/coraza-crs:*-caddy-*` est construite avec
+  # `xcaddy build --with github.com/corazawaf/coraza-caddy` — SANS suffixe de
+  # version, donc Go résout le module v1 : coraza-caddy v1.2.2 (janvier 2023),
+  # sur un coraza v3 pré-release. Cette version n'appelle JAMAIS
+  # ProcessResponseBody() : la phase 4 ne s'exécute pas, RESPONSE_BODY reste
+  # vide et TOUTES les règles RESPONSE-95x du CRS sont inertes. Les entrées
+  # d'audit `"transaction"` manquent pour la même raison.
+  # Vérifié en local sur le tag épinglé ci-dessous, puis sur la même image dont
+  # seul le binaire Caddy a été reconstruit avec coraza-caddy/v2 (v2.5.0,
+  # coraza v3.7.0) : phase 4 exécutée et corps de réponse lu.
+  #
+  # Passer à `true` UNIQUEMENT après avoir déployé une image reconstruite —
+  # voir README § « Inspection des réponses » et image/Dockerfile.
+  # Ce drapeau ne change rien au rendu des directives : il pilote
+  # l'avertissement affiché par NOTES.txt, pour que le chart cesse d'annoncer
+  # un gain qu'il n'a pas.
+  imageSupportsPhase4: false
+
   # --- directives Sec* poussées dans /opt/coraza/config.d/custom.conf ---------
   # ⚠️ YAML 1.1 (celui de Helm) résout `On`, `Off`, `Yes`, `No` NON QUOTÉS en
   #    booléens. Le chart les reconvertit (helper `secFlag`), mais garder les
@@ -79,8 +98,9 @@ coraza:
     requestBodyNoFilesLimit: 131072
     requestBodyLimitAction: ProcessPartial
 
-    # Le sandwich rend les phases 3/4 : les règles RESPONSE-* du CRS sont
-    # actives. C'est le gain de ce montage face à ForwardAuth ou au plugin WASM.
+    # Le sandwich rend la phase 4 ATTEIGNABLE — c'est le gain visé face à
+    # ForwardAuth ou au plugin WASM. Elle n'est effective qu'avec une image
+    # embarquant coraza-caddy >= v2 : cf. `imageSupportsPhase4` ci-dessus.
     responseBodyAccess: "On"
     responseBodyMimeType: "text/plain text/html text/xml application/json"
     responseBodyLimit: 524288
@@ -137,7 +157,8 @@ coraza:
     #    "id:1200,phase:1,deny,status:403,log,msg:'WAF smoke test'"
     #
     # Vérifie que la phase 4 lit réellement le corps de réponse. Ne matche que si
-    # le Content-Type est dans SecResponseBodyMimeType.
+    # le Content-Type est dans SecResponseBodyMimeType — et si le binaire Caddy
+    # embarque coraza-caddy >= v2 (cf. coraza.imageSupportsPhase4).
     #SecRule RESPONSE_BODY "@contains argo" \
     #    "id:1201,phase:4,pass,log,msg:'phase 4 OK: corps de reponse lu'"
     #
@@ -317,6 +338,14 @@ traefik:
           # fichier, pas stdout. Sans ça le log d'accès est introuvable.
           - name: ACCESSLOG
             value: "/dev/stdout"
+          # `tag:` est une action de métadonnée : les versions récentes de coraza
+          # la refusent dans SecDefaultAction et le sidecar ne démarre pas
+          # (« SecDefaultAction must not contain metadata actions »). L'image
+          # injecte pourtant `tag:coraza` par défaut dans crs-setup.conf.
+          # Sans effet sur le binaire amont v1.2.2, indispensable dès qu'on
+          # reconstruit avec coraza-caddy/v2. Constaté en local.
+          - { name: CORAZA_DEFAULT_PHASE1_ACTION, value: "phase:1,pass,log" }
+          - { name: CORAZA_DEFAULT_PHASE2_ACTION, value: "phase:2,pass,log" }
           # overrides/ est inclus EN DERNIER dans le Caddyfile : c'est la seule
           # voie pour la paranoïa. Surtout pas config.d, écrasé par crs-setup.conf.
           # ⚠️ noms de variables à confirmer sur /entrypoint.sh

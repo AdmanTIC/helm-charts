@@ -37,8 +37,10 @@ data:
     SecRequestBodyNoFilesLimit {{ int $c.requestBodyNoFilesLimit }}
     SecRequestBodyLimitAction {{ $c.requestBodyLimitAction }}
 
-    # Le sandwich rend les phases 3/4 : les règles RESPONSE-* du CRS sont actives.
-    # C'est le gain de ce montage par rapport à ForwardAuth ou au plugin WASM.
+    # Le sandwich rend la phase 4 ATTEIGNABLE, mais elle n'est réellement
+    # exécutée que si le binaire Caddy embarque coraza-caddy >= v2 : la v1.2.2
+    # livrée par l'image amont n'appelle jamais ProcessResponseBody().
+    # Voir coraza.imageSupportsPhase4 et README § « Inspection des réponses ».
     SecResponseBodyAccess {{ include "traefik-coraza.secFlag" $c.responseBodyAccess }}
     SecResponseBodyMimeType {{ $c.responseBodyMimeType }}
     SecResponseBodyLimit {{ int $c.responseBodyLimit }}

@@ -225,6 +225,60 @@ Règles de rédaction :
   `crs-setup.conf`, un `setvar:tx.blocking_paranoia_level` y serait écrasé.
   Passer par les variables d'environnement (`overrides/`, inclus en dernier).
 
+## Inspection des réponses (phase 4)
+
+**En l'état, avec l'image amont, la phase 4 ne s'exécute pas.** Le montage
+sandwich la rend *atteignable* — c'est sa justification face à ForwardAuth ou au
+plugin WASM — mais le binaire livré ne l'exécute pas.
+
+L'image `ghcr.io/coreruleset/coraza-crs:*-caddy-*` est construite avec
+`xcaddy build --with github.com/corazawaf/coraza-caddy`, **sans suffixe de
+version**. Go résout donc le module v1 : `coraza-caddy` v1.2.2 (janvier 2023),
+sur un `coraza/v3` pré-release. Dans cette version, `stream.go` n'appelle
+`ProcessResponseHeaders()` que depuis `WriteHeader()` ; `ProcessResponseBody()`
+n'est appelé **nulle part**. L'interception du corps de réponse est arrivée en
+v2 (`interceptor.go`).
+
+Constaté sur banc local avec le tag épinglé dans `values.yaml` :
+
+| | image amont (coraza-caddy v1.2.2) | binaire reconstruit (v2.5.0 / coraza v3.7.0) |
+|---|---|---|
+| règle `phase:3` sur `RESPONSE_CONTENT_TYPE` | déclenche | déclenche |
+| règle `phase:4` quelconque | **jamais** | déclenche |
+| `RESPONSE_BODY` | **toujours vide** | contient le corps |
+| entrées d'audit `"transaction"` | **absentes** | présentes |
+
+Ce n'est ni un problème de `SecResponseBodyMimeType` (le `; charset=…` est bien
+retiré par Coraza avant comparaison), ni de compression, ni du sandwich : le
+même résultat s'observe sur l'image seule, sans Traefik.
+
+Les phases 1 et 2 — l'essentiel du CRS, toute la protection des requêtes — sont
+intactes.
+
+### Correctif
+
+[image/Dockerfile](image/Dockerfile) reconstruit le seul binaire Caddy avec
+`github.com/corazawaf/coraza-caddy/v2` et le recopie dans l'image amont. Tout le
+reste (CRS, entrypoint, templates, UID) reste celui de l'amont.
+
+```bash
+docker build -t <registry>/coraza-crs-v2:4.28.0-<date> charts/traefik-coraza/image
+docker push  <registry>/coraza-crs-v2:4.28.0-<date>
+```
+
+Puis, dans `values.yaml` : reporter le tag aux **trois** emplacements
+(initContainer, sidecar, reloader) et passer `coraza.imageSupportsPhase4` à
+`true` — ce drapeau ne pilote que l'avertissement affiché par `NOTES.txt`, pour
+que le chart cesse d'annoncer un gain qu'il n'a pas.
+
+Les `CORAZA_DEFAULT_PHASE{1,2}_ACTION` déjà posées sur le sidecar sont
+**indispensables** avec un coraza récent : l'image injecte `tag:'coraza'` dans
+le `SecDefaultAction` de `crs-setup.conf`, et les versions récentes refusent les
+actions de métadonnée à cet endroit — le conteneur ne démarre pas du tout.
+
+La correction amont tient en un `/v2` dans le Dockerfile de
+`coreruleset/coraza-crs-docker`.
+
 ## Limites connues
 
 - **Règles à état non fiables.** Les collections `IP` / `SESSION` / `USER` de
@@ -232,9 +286,8 @@ Règles de rédaction :
   de brute force sont inopérantes en pratique, même avec l'épinglage local,
   puisque plusieurs nœuds voient du trafic. Le scoring d'anomalie CRS est
   per-transaction, donc intact.
-- **Audit log** : les entrées `"transaction"` n'ont pas été retrouvées en
-  cluster. Bloquant à terme : c'est l'exigence qui a fait
-  écarter le plugin WASM de Traefik.
+- **Audit log** : les entrées `"transaction"` sont absentes avec l'image amont —
+  même cause que la phase 4, et même correctif (voir ci-dessus).
 - **Non testés** : WebSocket, SSE, gRPC, upload au-delà de
   `SecRequestBodyLimit`, renouvellement ACME réel, ajout d'un Ingress avec un
   nouveau host, kill du sidecar.
