@@ -136,7 +136,7 @@ fait qu'il n'y a qu'un ingress controller.
 ## Avant la première installation
 
 1. **Tag de l'image Coraza** — il vaut `…:TAG` et doit être épinglé avant tout
-   `helm install`, **aux deux endroits** (voir la section suivante). `latest` est
+   `helm install`, **aux trois endroits** (voir la section suivante). `latest` est
    exclu : l'initContainer patche un template livré par l'image, une dérive
    silencieuse casserait le patch au pire moment.
 
@@ -169,13 +169,14 @@ fait qu'il n'y a qu'un ingress controller.
          depth: 1
    ```
 
-## Le tag de l'image est écrit deux fois
+## Le tag de l'image est écrit trois fois
 
-Dans `traefik.deployment.initContainers` (patch du Caddyfile) et dans
-`traefik.deployment.additionalContainers` (sidecar qui le consomme). Les deux
-doivent porter le **même** tag, sinon l'initContainer patche un template issu
-d'une version différente de celle qui le lit. `NOTES.txt` affiche les deux images
-au déploiement et signale une divergence.
+Dans `traefik.deployment.initContainers` (patch du Caddyfile) et deux fois dans
+`traefik.deployment.additionalContainers` : le sidecar `coraza` qui consomme le
+template patché, et `coraza-reload` dont le binaire `caddy` réadapte le Caddyfile
+pour l'API admin. Les trois doivent porter le **même** tag, sinon l'initContainer
+patche un template issu d'une version différente de celle qui le lit.
+`NOTES.txt` affiche les trois images au déploiement et signale une divergence.
 
 Il n'existe pas de valeur unique possible : le chart Traefik rend ces tableaux
 avec `toYaml` **sans `tpl`**, donc aucune valeur du parent ne peut les alimenter,
@@ -192,7 +193,7 @@ Deux conséquences pour ArgoCD et `-f` :
   tag : il réduit le sidecar à cette seule clé et supprime `name`, `env`,
   `volumeMounts` et `NET_BIND_SERVICE`.
 
-Voie normale : éditer les deux tags dans `values.yaml` et bumper `version` dans
+Voie normale : éditer les trois tags dans `values.yaml` et bumper `version` dans
 `Chart.yaml`. Pour surcharger depuis l'extérieur, il faut redonner les deux
 tableaux **entiers**.
 
@@ -223,7 +224,14 @@ Règles de rédaction :
   `there is another rule with id 900000`.
 - Le niveau de paranoïa ne se règle pas ici : `config.d` est inclus *avant*
   `crs-setup.conf`, un `setvar:tx.blocking_paranoia_level` y serait écrasé.
-  Passer par les variables d'environnement (`overrides/`, inclus en dernier).
+  Passer par les variables d'environnement `PARANOIA`, `BLOCKING_PARANOIA`,
+  `ANOMALY_INBOUND`, `ANOMALY_OUTBOUND` (l'entrypoint les applique par `sed` sur
+  `crs-setup.conf` ; le répertoire `overrides/`, lui, n'est alimenté par rien
+  dans l'image).
+- **Quoter `On` / `Off`.** YAML 1.1 — celui de Helm — les résout en booléens. Le
+  chart les reconvertit (helper `secFlag`) et refuse au rendu toute valeur hors
+  domaine pour `ruleEngine` et `audit.engine`, mais un fichier de values où on
+  lit `On` et où Coraza recevrait `true` est un piège inutile.
 
 ## Inspection des réponses (phase 4)
 
@@ -330,3 +338,7 @@ pas les pods : il faut un
   nouveau host, kill du sidecar.
 - Le patch du Caddyfile par initContainer est un contournement. Un point
   d'extension propre côté `coreruleset/coraza-crs-docker` serait préférable.
+- **`DetectionOnly` neutralise aussi les `deny` explicites**, y compris ceux des
+  règles maison : le smoke test de blocage ne renvoie 403 qu'avec
+  `coraza.config.ruleEngine: "On"`. La règle est bien évaluée et journalisée
+  dans les deux cas.

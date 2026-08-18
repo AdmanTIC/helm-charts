@@ -6,10 +6,11 @@
 #  Les valeurs marquées ⚠️ ne sont pas vérifiées : les confirmer, ne pas les
 #  propager comme des faits.
 #
-#  ⚠️ IMAGE DU WAF : LE TAG EST ÉCRIT DEUX FOIS, C'EST VOLONTAIRE
+#  ⚠️ IMAGE DU WAF : LE TAG EST ÉCRIT TROIS FOIS, C'EST VOLONTAIRE
 #     Une fois dans `traefik.deployment.initContainers` (patch du Caddyfile) et
-#     une fois dans `traefik.deployment.additionalContainers` (sidecar qui le
-#     consomme). Les deux doivent porter le MÊME tag : sinon l'initContainer
+#     deux fois dans `traefik.deployment.additionalContainers` (sidecar `coraza`
+#     qui le consomme, conteneur `coraza-reload` qui réadapte le Caddyfile pour
+#     l'API admin). Les trois doivent porter le MÊME tag : sinon l'initContainer
 #     patcherait un template issu d'une version différente de celle qui le lit.
 #
 #     Il n'y a pas de valeur unique possible. Le chart Traefik rend ces deux
@@ -22,7 +23,8 @@
 #       - Helm REMPLACE les listes au lieu de les fusionner, donc un tableau
 #         partiel (`--set …additionalContainers[0].image=…`) supprime tout le
 #         reste du sidecar : name, env, volumeMounts, NET_BIND_SERVICE.
-#     Voie normale : éditer les deux tags ici et bumper `version` dans Chart.yaml.
+#     Voie normale : éditer les trois tags ici et bumper `version` dans Chart.yaml.
+#     NOTES.txt affiche les trois au déploiement et signale toute divergence.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -150,8 +152,13 @@ coraza:
     #    "id:1010,phase:1,pass,nolog,ctl:ruleRemoveById=920420"
 
     # --- RÈGLES DE TEST : décommenter temporairement, puis RETIRER ------------
-    # Smoke test du chemin de refus, indépendant de SecRuleEngine (deny explicite).
-    # Valide que le 403 se propage Coraza → Traefik → client.
+    # Smoke test du chemin de refus : valide que le 403 se propage
+    # Coraza → Traefik → client.
+    # ⚠️ INOPÉRANT tant que ruleEngine vaut DetectionOnly : ce mode neutralise
+    #    l'action disruptive de TOUTES les règles, y compris un `deny` explicite.
+    #    Vérifié en local : la règle est bien évaluée et journalisée, mais la
+    #    réponse reste 200. Pour tester le blocage, basculer ruleEngine sur "On"
+    #    le temps du test.
     #   curl -o /dev/null -w '%{http_code}\n' -H 'X-WAF-Test: blockme' https://<host>/
     #SecRule REQUEST_HEADERS:X-WAF-Test "@streq blockme" \
     #    "id:1200,phase:1,deny,status:403,log,msg:'WAF smoke test'"
@@ -352,9 +359,11 @@ traefik:
           # reconstruit avec coraza-caddy/v2. Constaté en local.
           - { name: CORAZA_DEFAULT_PHASE1_ACTION, value: "phase:1,pass,log" }
           - { name: CORAZA_DEFAULT_PHASE2_ACTION, value: "phase:2,pass,log" }
-          # overrides/ est inclus EN DERNIER dans le Caddyfile : c'est la seule
-          # voie pour la paranoïa. Surtout pas config.d, écrasé par crs-setup.conf.
-          # ⚠️ noms de variables à confirmer sur /entrypoint.sh
+          # Réglage de la paranoïa : ces variables agissent par `sed` sur
+          # crs-setup.conf (script /opt/coraza/activate-rules.sh), PAS via
+          # overrides/, qui n'est alimenté par rien dans l'image. Noms relevés
+          # sur le Dockerfile amont.
+          # - { name: PARANOIA,          value: "1" }
           # - { name: BLOCKING_PARANOIA, value: "1" }
           # - { name: ANOMALY_INBOUND,   value: "5" }
           # - { name: ANOMALY_OUTBOUND,  value: "4" }
