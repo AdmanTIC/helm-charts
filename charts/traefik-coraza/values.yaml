@@ -25,6 +25,11 @@
 #         reste du sidecar : name, env, volumeMounts, NET_BIND_SERVICE.
 #     Voie normale : éditer les trois tags ici et bumper `version` dans Chart.yaml.
 #     NOTES.txt affiche les trois au déploiement et signale toute divergence.
+#
+#     L'initContainer `caddy-plugin-build` fait exception : il utilise l'image
+#     OFFICIELLE `caddy:<version>-builder`, dont le tag suit la version de Caddy
+#     et non celle du CRS. Il doit rester aligné sur la version de Caddy de
+#     l'image du WAF, pas sur son tag.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -75,16 +80,74 @@ coraza:
   # ProcessResponseBody() : la phase 4 ne s'exécute pas, RESPONSE_BODY reste
   # vide et TOUTES les règles RESPONSE-95x du CRS sont inertes. Les entrées
   # d'audit `"transaction"` manquent pour la même raison.
-  # Vérifié en local sur le tag épinglé ci-dessous, puis sur la même image dont
-  # seul le binaire Caddy a été reconstruit avec coraza-caddy/v2 (v2.5.0,
-  # coraza v3.7.0) : phase 4 exécutée et corps de réponse lu.
   #
-  # Passer à `true` UNIQUEMENT après avoir déployé une image reconstruite —
-  # voir README § « Inspection des réponses » et image/Dockerfile.
-  # Ce drapeau ne change rien au rendu des directives : il pilote
-  # l'avertissement affiché par NOTES.txt, pour que le chart cesse d'annoncer
-  # un gain qu'il n'a pas.
-  imageSupportsPhase4: false
+  # Correctif proposé en amont : coreruleset/coraza-crs-docker#78. En attendant
+  # sa publication, l'initContainer `caddy-plugin-build` (plus bas) recompile le
+  # binaire Caddy avec coraza-caddy/v2 À CHAQUE DÉMARRAGE DE POD et le monte
+  # par-dessus /usr/bin/caddy. Aucune image à construire, publier, ni maintenir.
+  #
+  # ⚠️ Ce n'est PAS gratuit, et c'est assumé comme provisoire :
+  #    - le démarrage du pod est allongé de la compilation : ~2 min mesurées
+  #      caches vides, 1 CPU, sur l'image builder officielle ;
+  #    - le nœud doit joindre le proxy de modules Go au démarrage. Sans réseau,
+  #      l'initContainer échoue et le pod ne démarre pas — donc plus d'ingress
+  #      sur ce nœud. Échec bruyant, pas de WAF silencieusement désactivé ;
+  #    - la compilation consomme CPU et mémoire au démarrage.
+  #    Voir README § « Inspection des réponses (phase 4) » pour le retour à une
+  #    image prête à l'emploi le jour où la correction amont est publiée.
+
+  # --- réponses en flux (SSE, grpc-gateway) : deux correctifs de plus --------
+  # Le `/v2` seul ne suffit PAS à faire ressortir une réponse en flux. Constaté
+  # en cluster — UI Argo CD figée, `DownstreamContentSize` à 0 o côté websecure
+  # sur 26 requêtes `/api/v1/stream/…` abouties en 200 — puis reproduit et
+  # corrigé sur banc local le 2026-08-19 (image amont, Caddy 2.11.3). Trois
+  # défauts indépendants, sur le même chemin :
+  #
+  #  1. coraza-caddy v1.2.2 bufferise SANS consulter `responseBodyAccess` :
+  #     stream.go ne décide qu'à partir de IsResponseBodyProcessable(), donc du
+  #     seul Content-Type, et coraza.go ne recopie son tampon vers le client
+  #     qu'APRÈS la fin de la réponse amont — donc jamais pour un flux sans fin,
+  #     et jamais non plus si la réponse se termine en erreur. La règle id:1003
+  #     livrée ci-dessous (`ctl:responseBodyAccess=Off` sur
+  #     `Accept: text/event-stream`) ne protège donc RIEN en v1. Levé par le
+  #     `/v2` de l'initContainer `caddy-plugin-build`.
+  #  2. coraza-caddy v2.5.0 ne propage AUCUN flush : `rwInterceptor.Flush()`
+  #     teste `i.w.(http.Flusher)`, alors que Caddy n'implémente plus `Flush()`
+  #     sur ses ResponseWriter depuis 2.6.3 — `caddyhttp.responseRecorder`
+  #     expose `FlushError()`, `ResponseWriterWrapper` seulement `Unwrap()`.
+  #     L'assertion échoue TOUJOURS : tout flux traversant coraza_waf est retenu
+  #     jusqu'à la fin de la réponse, même quand le WAF ne le bufferise pas, et
+  #     le `flush_interval` de la ReverseProxy n'y change rien. Levé par le
+  #     patch `http.ResponseController` appliqué dans `caddy-plugin-build`.
+  #  3. le template amont pose `read_timeout ${PROXY_TIMEOUT}` (60 s par défaut)
+  #     sur le transport du reverse_proxy, et Caddy réarme ce délai avant CHAQUE
+  #     lecture amont : un flux silencieux plus de 60 s est coupé — « i/o
+  #     timeout » côté Caddy, comme observé en cluster. Levé par
+  #     `read_timeout 0`, injecté par `caddy-template-patch`.
+  #
+  # Banc : amont émettant une ligne JSON par seconde, en chunked, sans
+  # Content-Length — la forme exacte des réponses grpc-gateway d'Argo CD.
+  #
+  #   | chaîne                          | flux          | réponse courte     |
+  #   |---------------------------------|---------------|--------------------|
+  #   | Caddy sans coraza_waf           | 1 ligne/s     | ok                 |
+  #   | amont v1.2.2                    | tout à la fin | p3+p5, p4=0        |
+  #   | v2.5.0 seul                     | tout à la fin | p3+p4+p5, corps lu |
+  #   | v2.5.0 + patch flush (ce chart) | 1 ligne/s     | p3+p4+p5, corps lu |
+  #   | + read_timeout 0                | survit à 70 s de silence            |
+  #
+  # ⚠️ Le discriminant n'est PAS la nature SSE de la réponse. Argo CD répond
+  #    `Content-Type: application/json` à un client qui demande
+  #    `Accept: text/event-stream` (grpc-gateway) : ce qui déclenche la
+  #    bufferisation est l'appartenance du Content-Type de la RÉPONSE à
+  #    `responseBodyMimeType`. Un correctif conditionné au Content-Type de la
+  #    réponse ne rattraperait pas Argo CD, et retirer `application/json` de la
+  #    liste renoncerait à l'inspection de toutes les réponses JSON. D'où
+  #    id:1003, qui travaille sur la REQUÊTE.
+  # ⚠️ Sans l'en-tête `Accept` (donc sans id:1003), un flux JSON reste bufferisé
+  #    et inspecté : ces correctifs ne désarment aucune inspection. C'est le
+  #    test de non-régression à rejouer à chaque bump de version — procédure
+  #    dans README § « Réponses en flux ».
 
   # --- directives Sec* poussées dans /opt/coraza/config.d/custom.conf ---------
   # ⚠️ YAML 1.1 (celui de Helm) résout `On`, `Off`, `Yes`, `No` NON QUOTÉS en
@@ -101,8 +164,8 @@ coraza:
     requestBodyLimitAction: ProcessPartial
 
     # Le sandwich rend la phase 4 ATTEIGNABLE — c'est le gain visé face à
-    # ForwardAuth ou au plugin WASM. Elle n'est effective qu'avec une image
-    # embarquant coraza-caddy >= v2 : cf. `imageSupportsPhase4` ci-dessus.
+    # ForwardAuth ou au plugin WASM. Elle n'est effective que si le binaire
+    # Caddy embarque coraza-caddy >= v2, d'où l'initContainer de compilation.
     responseBodyAccess: "On"
     responseBodyMimeType: "text/plain text/html text/xml application/json"
     responseBodyLimit: 524288
@@ -138,6 +201,10 @@ coraza:
       # ACME http-01 : ne jamais inspecter le challenge, cert-manager en dépend.
       acmeChallenge: true
       # WebSocket / gRPC / SSE : l'inspection de corps casse le streaming.
+      # Les WebSocket s'en sortiraient de toute façon — Caddy détourne la
+      # connexion et court-circuite le chemin de réponse. Pour une réponse HTTP
+      # en flux, ces `ctl:` n'ont d'effet qu'à partir de coraza-caddy v2 ET avec
+      # le patch de flush : cf. « réponses en flux » ci-dessus.
       streamingProtocols: true
       # Sondes kubelet + Host numérique interne (neutralise 920350 sans le
       # désactiver pour l'externe, où un Host numérique reste un signal de scan).
@@ -165,7 +232,7 @@ coraza:
     #
     # Vérifie que la phase 4 lit réellement le corps de réponse. Ne matche que si
     # le Content-Type est dans SecResponseBodyMimeType — et si le binaire Caddy
-    # embarque coraza-caddy >= v2 (cf. coraza.imageSupportsPhase4).
+    # embarque coraza-caddy >= v2 (initContainer `caddy-plugin-build`).
     #SecRule RESPONSE_BODY "@contains argo" \
     #    "id:1201,phase:4,pass,log,msg:'phase 4 OK: corps de reponse lu'"
     #
@@ -260,6 +327,11 @@ traefik:
       # Template Caddyfile patché, produit par l'initContainer.
       - name: caddy-template
         emptyDir: {}
+      # Binaire Caddy recompilé avec coraza-caddy/v2, produit par
+      # l'initContainer `caddy-plugin-build` et monté par-dessus /usr/bin/caddy
+      # dans les deux conteneurs qui exécutent `caddy`.
+      - name: caddy-bin
+        emptyDir: {}
       # Caddyfile FINAL, généré par l'entrypoint du sidecar (envsubst + caddy fmt).
       # Partagé pour que le conteneur `coraza-reload` puisse le relire et le
       # renvoyer à l'API admin — il n'a pas d'autre moyen d'y accéder, les
@@ -330,6 +402,63 @@ traefik:
         resources:
           requests: { cpu: 10m, memory: 32Mi }
 
+    # --- compilation du binaire Caddy avec coraza-caddy/v2 -------------------
+    # Placé APRÈS le patch du template : celui-ci échoue en deux secondes si les
+    # ancres amont ont bougé, autant le savoir avant d'attendre une compilation.
+    #
+    # Pourquoi compiler ici plutôt que publier une image :
+    #  - le correctif amont (coreruleset/coraza-crs-docker#78) tient en deux
+    #    lignes et sera publié ; monter une chaîne de build et un registre pour
+    #    une image jetable coûterait plus cher que ce contournement ;
+    #  - l'API de build officielle de Caddy (caddyserver.com/api/download) rend
+    #    exactement ce binaire en quelques secondes, mais elle répond
+    #    « Contact the Caddy team » aux agents automatisés. L'automatiser
+    #    reviendrait à contourner une restriction délibérée : écartée.
+    #
+    # Deux épinglages, deux rôles :
+    #  - le tag de l'image builder fixe la version de Caddy produite, qui doit
+    #    rester alignée sur celle de l'image du sidecar (2.11.3) ;
+    #  - `@v2.5.0` fixe la version de coraza-caddy.
+      - name: caddy-plugin-build
+        # Image OFFICIELLE Caddy, variante builder : Go + xcaddy. Ce n'est pas
+        # l'image du WAF, son tag suit la version de Caddy et non celle du CRS.
+        image: caddy:2.11.3-builder
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            set -e
+            # Le podSecurityContext impose un UID sans répertoire personnel :
+            # sans ces variables, Go tente d'écrire dans /root et échoue.
+            # Les caches restent dans la couche du conteneur et disparaissent
+            # avec l'initContainer ; seul le binaire survit dans l'emptyDir.
+            export HOME=/tmp/build GOPATH=/tmp/build/go GOCACHE=/tmp/build/cache
+            mkdir -p "$GOPATH" "$GOCACHE"
+            xcaddy build --with github.com/corazawaf/coraza-caddy/v2@v2.5.0 \
+                         --output /work/caddy
+            # Garde de sortie : sans le suffixe /v2, Go résoudrait le module v1
+            # SANS erreur, et on repartirait pour une phase 4 morte. C'est
+            # exactement le piège dans lequel l'image amont est tombée.
+            /work/caddy build-info | grep -q 'coraza-caddy/v2' \
+              || { echo "!! binaire construit sans coraza-caddy/v2" >&2; exit 1; }
+            /work/caddy build-info | grep coraza
+            /work/caddy version
+        volumeMounts:
+          - { name: caddy-bin, mountPath: /work }
+        # GOPROXY : à renseigner si les nœuds ne joignent pas proxy.golang.org.
+        # Sans accès, l'initContainer échoue et le pod ne démarre pas — donc
+        # plus d'ingress sur ce nœud. Échec bruyant, jamais de WAF muet.
+        # env:
+        #   - { name: GOPROXY, value: "https://proxy.interne/" }
+        securityContext:
+          allowPrivilegeEscalation: false
+          seccompProfile: { type: RuntimeDefault }
+          capabilities: { drop: ["ALL"] }
+        resources:
+          # Compilation Go : le pod démarre plus lentement s'il est bridé ici.
+          requests: { cpu: "1", memory: 1Gi }
+          limits: { memory: 2Gi }
+
     # --- sidecar WAF ---------------------------------------------------------
     additionalContainers:
       # Nom volontairement stable : les procédures de diagnostic le référencent
@@ -368,6 +497,12 @@ traefik:
           # - { name: ANOMALY_INBOUND,   value: "5" }
           # - { name: ANOMALY_OUTBOUND,  value: "4" }
         volumeMounts:
+          # Binaire recompilé avec coraza-caddy/v2, par-dessus celui de
+          # l'image. `subPath` monte le seul fichier, sans masquer /usr/bin.
+          # Corollaire : la file capability cap_net_bind_service du binaire de
+          # l'image disparaît — sans conséquence, Caddy écoute sur 8090, et
+          # NET_BIND_SERVICE plus bas reste nécessaire si l'on retire ce montage.
+          - { name: caddy-bin, mountPath: /usr/bin/caddy, subPath: caddy, readOnly: true }
           - name: caddy-template
             mountPath: /templates/Caddyfile
             # subPath : monte le seul fichier, ne masque pas le reste de /templates.
@@ -437,9 +572,10 @@ traefik:
       # en compte qu'au redémarrage du pod (`kubectl rollout restart`).
       - name: coraza-reload
         # ⚠️ MÊME TAG que les deux autres conteneurs (cf. en-tête du fichier).
-        #    Le binaire `caddy` de cette image sert de client de l'API admin ;
-        #    une version divergente adapterait le Caddyfile différemment de
-        #    celle qui l'exécute.
+        #    Le binaire `caddy` monté depuis caddy-bin sert de client de l'API
+        #    admin ; il doit connaître le module dans la même version que le
+        #    processus qu'il pilote, sans quoi le Caddyfile serait réadapté
+        #    différemment de celui qui tourne.
         image: ghcr.io/coreruleset/coraza-crs:4.28.0-caddy-alpine-202607180107
         imagePullPolicy: IfNotPresent
         command: ["/bin/sh", "-c"]
@@ -457,6 +593,21 @@ traefik:
                 echo "config.d suivie, empreinte initiale $cur"
               elif [ "$cur" != "$prev" ]; then
                 echo "config.d modifiée ($prev -> $cur), rechargement de Caddy"
+                # Marqueur de révision, INDISPENSABLE : coraza-caddy v2 garde ses
+                # instances WAF dans un pool dont la clé ne hache que les CHEMINS
+                # d'include et la chaîne `directives`, jamais le contenu des
+                # fichiers. Sans changement de clé, le reload journalise
+                # « reusing existing WAF instance from pool » et les règles ne
+                # sont pas relues — le rechargement paraît réussir sans rien
+                # changer. Injecter la révision dans `directives` (un simple
+                # commentaire SecLang) change la clé, donc reconstruit le WAF.
+                awk -v rev="$cur" '
+                  /^[[:space:]]*directives `# config-revision/ { next }
+                  /coraza_waf \{/ { print; print "    directives `# config-revision " rev "`"; next }
+                  { print }
+                ' /etc/caddy/Caddyfile > /tmp/Caddyfile.new \
+                  && cp /tmp/Caddyfile.new /etc/caddy/Caddyfile \
+                  && caddy fmt --overwrite /etc/caddy/Caddyfile
                 if caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile \
                                 --address 127.0.0.1:2019 --force; then
                   echo "rechargement appliqué"
@@ -471,7 +622,11 @@ traefik:
             done
         volumeMounts:
           - { name: coraza-config, mountPath: /opt/coraza/config.d, readOnly: true }
-          - { name: caddy-etc, mountPath: /etc/caddy, readOnly: true }
+          # En écriture : le marqueur de révision est écrit dans le Caddyfile.
+          - { name: caddy-etc, mountPath: /etc/caddy }
+          # Le même binaire que le sidecar : `caddy reload` réadapte le
+          # Caddyfile, il doit connaître le module dans la même version.
+          - { name: caddy-bin, mountPath: /usr/bin/caddy, subPath: caddy, readOnly: true }
         resources:
           requests: { cpu: 5m, memory: 32Mi }
           limits: { memory: 64Mi }

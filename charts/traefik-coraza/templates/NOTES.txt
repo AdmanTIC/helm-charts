@@ -4,7 +4,7 @@ Chemin du trafic :
 
   VIP → NodePort :443  websecure (TLS, cert-manager)
           └─ IngressRoute {{ .Values.catchAll.name }}, priority {{ int .Values.catchAll.priority }}
-               → sidecar coraza :{{ int .Values.coraza.port }}   (inspection req{{ if .Values.coraza.imageSupportsPhase4 }} + resp{{ end }})
+               → sidecar coraza :{{ int .Values.coraza.port }}   (inspection req + resp)
                     → 127.0.0.1:8880  entrypoint « internal » (HTTP, loopback)
                          → Ingress applicatifs → pods
 
@@ -37,8 +37,10 @@ Identité des objets Traefik (alignée sur un install standalone) :
        unique (cf. en-tête de values.yaml). On lit donc l'image réellement rendue,
        en tolérant l'absence : ces NOTES ne doivent jamais faire échouer le rendu. */}}
 {{- $initImg := "" }}
+{{- $buildImg := "" }}
 {{- range (.Values.traefik.deployment.initContainers | default list) }}
   {{- if eq (dig "name" "" .) "caddy-template-patch" }}{{ $initImg = dig "image" "" . }}{{ end }}
+  {{- if eq (dig "name" "" .) "caddy-plugin-build" }}{{ $buildImg = dig "image" "" . }}{{ end }}
 {{- end }}
 {{- $sideImg := "" }}
 {{- $reloadImg := "" }}
@@ -52,6 +54,9 @@ Image du WAF (le tag figure une fois par conteneur, c'est volontaire) :
   initContainer  {{ $initImg | default "<introuvable>" }}
   sidecar        {{ $sideImg | default "<introuvable>" }}
   reloader       {{ $reloadImg | default "<absent : rechargement à chaud désactivé>" }}
+
+Binaire Caddy recompilé au démarrage avec coraza-caddy/v2 (phase 4) :
+  builder        {{ $buildImg | default "<absent : phase 4 inactive>" }}
 {{- if gt (len (uniq $imgs)) 1 }}
 
 !! LES TAGS DIVERGENT. L'initContainer patche le template Caddyfile livré par SON
@@ -66,17 +71,23 @@ Image du WAF (le tag figure une fois par conteneur, c'est volontaire) :
    Voir README.md § « Avant la première installation ».
   {{- end }}
 {{- end }}
-{{- if not .Values.coraza.imageSupportsPhase4 }}
+{{- if not $buildImg }}
 
-!! INSPECTION DES RÉPONSES INACTIVE (coraza.imageSupportsPhase4: false)
+!! INSPECTION DES RÉPONSES INACTIVE (initContainer `caddy-plugin-build` absent)
    L'image amont est construite avec coraza-caddy v1.2.2, qui n'appelle jamais
    ProcessResponseBody() : la phase 4 ne s'exécute pas, RESPONSE_BODY reste vide
    et toutes les règles RESPONSE-95x du CRS sont inertes. Les entrées d'audit
    "transaction" manquent pour la même raison.
-   Le montage sandwich rend la phase 4 ATTEIGNABLE ; il faut en plus une image
-   dont le binaire Caddy embarque coraza-caddy >= v2.
-   Correctif et procédure : README.md § « Inspection des réponses (phase 4) ».
+   Le montage sandwich rend la phase 4 ATTEIGNABLE ; il faut en plus un binaire
+   Caddy embarquant coraza-caddy >= v2.
+   Voir README.md § « Inspection des réponses (phase 4) ».
    La protection des REQUÊTES (phases 1 et 2, l'essentiel du CRS) fonctionne.
+{{- else }}
+
+   La phase 4 dépend d'une compilation au démarrage du pod : le WAF ne sert
+   aucun trafic tant que `caddy-plugin-build` n'a pas terminé, et l'absence
+   d'accès au proxy de modules Go empêche le pod de démarrer.
+   Contournement assumé, en attendant coreruleset/coraza-crs-docker#78.
 {{- end }}
 {{- if not $reloadImg }}
 
@@ -87,8 +98,9 @@ Image du WAF (le tag figure une fois par conteneur, c'est volontaire) :
 
 Vérifications à faire maintenant :
 
-1. Le CRS est chargé et Coraza écoute :
-     kubectl -n {{ .Release.Namespace }} logs ds/traefik -c coraza | head -50
+1. Le binaire Caddy embarque bien coraza-caddy/v2, et le CRS est chargé :
+     kubectl -n {{ .Release.Namespace }} logs ds/{{ include "traefik-coraza.tfFullname" . }} -c caddy-plugin-build
+     kubectl -n {{ .Release.Namespace }} logs ds/{{ include "traefik-coraza.tfFullname" . }} -c coraza | head -50
 
 2. Le Caddyfile a bien été patché (bloc global servers + header_up) :
      kubectl -n {{ .Release.Namespace }} logs ds/traefik -c caddy-template-patch

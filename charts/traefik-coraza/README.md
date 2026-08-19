@@ -263,26 +263,70 @@ même résultat s'observe sur l'image seule, sans Traefik.
 Les phases 1 et 2 — l'essentiel du CRS, toute la protection des requêtes — sont
 intactes.
 
-### Correctif
+### Correctif : compilation au démarrage du pod
 
-[image/Dockerfile](image/Dockerfile) reconstruit le seul binaire Caddy avec
-`github.com/corazawaf/coraza-caddy/v2` et le recopie dans l'image amont. Tout le
-reste (CRS, entrypoint, templates, UID) reste celui de l'amont.
+Le correctif est un `/v2` dans une ligne du Dockerfile amont, proposé en
+[coreruleset/coraza-crs-docker#78](https://github.com/coreruleset/coraza-crs-docker/pull/78).
+En attendant sa publication, le chart **recompile le binaire Caddy au démarrage
+de chaque pod** plutôt que de publier une image :
 
-```bash
-docker build -t <registry>/coraza-crs-v2:4.28.0-<date> charts/traefik-coraza/image
-docker push  <registry>/coraza-crs-v2:4.28.0-<date>
+```
+initContainer caddy-plugin-build   image officielle caddy:<version>-builder
+  └─ xcaddy build --with github.com/corazawaf/coraza-caddy/v2@v2.5.0
+       └─ emptyDir caddy-bin  →  monté par-dessus /usr/bin/caddy
+                                 dans `coraza` et dans `coraza-reload`
 ```
 
-Puis, dans `values.yaml` : reporter le tag aux **trois** emplacements
-(initContainer, sidecar, reloader) et passer `coraza.imageSupportsPhase4` à
-`true` — ce drapeau ne pilote que l'avertissement affiché par `NOTES.txt`, pour
-que le chart cesse d'annoncer un gain qu'il n'a pas.
+Rien à construire, à publier, ni à maintenir : ni registre, ni chaîne de build,
+ni image dérivée à re-tagger à chaque bump du CRS. Le binaire est le seul
+artefact, il vit dans un `emptyDir` et meurt avec le pod.
 
-Les `CORAZA_DEFAULT_PHASE{1,2}_ACTION` déjà posées sur le sidecar sont
-**indispensables** avec un coraza récent : l'image injecte `tag:'coraza'` dans
-le `SecDefaultAction` de `crs-setup.conf`, et les versions récentes refusent les
-actions de métadonnée à cet endroit — le conteneur ne démarre pas du tout.
+**C'est un contournement assumé**, choisi parce que sa date de péremption est
+proche. Ce qu'il coûte :
+
+- **le démarrage du pod est allongé par la compilation** — **~2 min** mesurées
+  caches vides sur `caddy:2.11.3-builder`, 1 CPU, binaire de 50 Mo. Sur un
+  DaemonSet, chaque nœud repasse par là à chaque rollout, et il ne sert aucun
+  trafic pendant ce temps ;
+- **les nœuds doivent joindre le proxy de modules Go au démarrage.** Sans accès,
+  l'initContainer échoue et le pod ne démarre pas — plus d'ingress sur ce nœud.
+  L'échec est bruyant, il n'y a jamais de WAF silencieusement désactivé. Un
+  `GOPROXY` interne se déclare en commentaire dans les values ;
+- **la compilation consomme CPU et mémoire** au démarrage (`requests: 1 CPU,
+  1 Gi`).
+
+Deux épinglages, à garder alignés :
+
+| épinglage | rôle |
+|---|---|
+| tag de `caddy:<version>-builder` | version de Caddy produite — doit suivre celle de l'image du sidecar |
+| `@v2.5.0` sur le module | version de coraza-caddy |
+
+Une garde de sortie vérifie `caddy build-info | grep coraza-caddy/v2` avant de
+laisser le pod démarrer : sans le suffixe `/v2`, Go résoudrait le module v1
+**sans la moindre erreur**, et on repartirait pour une phase 4 morte. C'est très
+exactement le piège dans lequel l'image amont est tombée.
+
+### Le jour où la correction amont est publiée
+
+Reprendre le tag officiel dans les trois conteneurs, supprimer l'initContainer
+`caddy-plugin-build`, le volume `caddy-bin` et ses deux montages. `NOTES.txt`
+détecte l'absence de l'initContainer et redescend l'avertissement « phase 4
+inactive » si le tag utilisé n'embarque pas encore le correctif.
+
+Même chose si vous préférez à tout moment une image prête à l'emploi : il suffit
+d'appliquer le patch de la PR #78 à `caddy/Dockerfile` amont, de publier l'image
+où vous voulez et de retirer l'initContainer.
+
+### Pourquoi pas l'API de build de Caddy
+
+`caddyserver.com/api/download?p=github.com/corazawaf/coraza-caddy/v2` rend
+exactement ce binaire en quelques secondes, sans compilation. Elle est écartée :
+le service répond `Contact the Caddy team` (HTTP 200, 22 octets) aux agents
+automatisés, et ne sert le binaire qu'aux clients se présentant comme un
+navigateur ou `curl`. C'est un filtrage délibéré ; l'automatiser depuis chaque
+démarrage de pod reviendrait à le contourner. Si le compromis vous intéresse,
+c'est une question à poser à l'équipe Caddy, pas un `User-Agent` à falsifier.
 
 ### Pourquoi pas une image officielle
 
@@ -317,8 +361,8 @@ Construit en local : le binaire obtenu embarque bien coraza-caddy v2.5.0 et
 coraza v3.7.0, soit exactement la version que le `docker-bake.hcl` amont croit
 déjà livrer.
 
-Une fois cette correction publiée, il n'y aura plus rien à maintenir ici :
-reprendre le tag officiel et supprimer `image/`.
+C'est cette correction qui fait l'objet de la PR #78, et c'est elle qui rendra
+l'initContainer de compilation inutile.
 
 Les autres variantes du même dépôt ne sont pas des porte-de-sortie : `nginx`
 s'appuie sur `libcoraza` (moteur Go, hôte C) mais reste nginx, écarté par
@@ -342,9 +386,22 @@ supprime ce redémarrage :
 2. au changement, il appelle l'API admin de Caddy — `127.0.0.1:2019`, atteignable
    parce que les conteneurs d'un pod partagent la pile réseau, et jamais exposée
    hors du pod ;
-3. `caddy reload --force`. Le `--force` n'est pas optionnel : Caddy compare le
-   **JSON adapté**, pas les fichiers inclus. Le Caddyfile n'ayant pas bougé, sans
-   `--force` il répond `config is unchanged` et ne recharge rien.
+3. il inscrit l'empreinte de la configuration dans le Caddyfile, sous forme de
+   `directives \`# config-revision <md5>\`` — un simple commentaire SecLang ;
+4. `caddy reload --force`.
+
+Les points 3 et 4 ont chacun leur raison, et aucune n'est superflue :
+
+- **`--force`** : Caddy compare le **JSON adapté**, pas les fichiers inclus. Le
+  Caddyfile n'ayant pas bougé, il répondrait sinon `config is unchanged`.
+- **le marqueur de révision** : coraza-caddy v2 conserve ses instances WAF dans
+  un pool dont la clé ne hache que les **chemins** d'`include` et la chaîne
+  `directives` — jamais le contenu des fichiers. Sans changement de clé, le
+  rechargement journalise `reusing existing WAF instance from pool`, réutilise le
+  WAF existant, et **les règles ne sont pas relues** : le rechargement paraît
+  réussir sans rien changer. C'est le mode d'échec le plus traître de tout ce
+  montage, il a été reproduit puis corrigé par ce marqueur. Il n'existait pas
+  avec la v1.2.2, qui n'avait pas de pool — mais la v1.2.2 n'a pas de phase 4.
 
 Le rechargement est gracieux : les connexions en cours sont préservées. Si la
 nouvelle configuration est invalide, le rechargement est refusé, le WAF continue

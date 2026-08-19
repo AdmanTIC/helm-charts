@@ -14,6 +14,3 @@
 .idea/
 .vscode/
 .project
-
-# Le Dockerfile de reconstruction du binaire Caddy ne fait pas partie du chart.
-image/
