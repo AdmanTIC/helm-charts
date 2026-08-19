@@ -55,7 +55,8 @@ Image du WAF (le tag figure une fois par conteneur, c'est volontaire) :
   sidecar        {{ $sideImg | default "<introuvable>" }}
   reloader       {{ $reloadImg | default "<absent : rechargement à chaud désactivé>" }}
 
-Binaire Caddy recompilé au démarrage avec coraza-caddy/v2 (phase 4) :
+Binaire Caddy recompilé au démarrage, coraza-caddy/v2 + patch de flush
+(phase 4 ET réponses en flux) :
   builder        {{ $buildImg | default "<absent : phase 4 inactive>" }}
 {{- if gt (len (uniq $imgs)) 1 }}
 
@@ -82,17 +83,29 @@ Binaire Caddy recompilé au démarrage avec coraza-caddy/v2 (phase 4) :
    Caddy embarquant coraza-caddy >= v2.
    Voir README.md § « Inspection des réponses (phase 4) ».
    La protection des REQUÊTES (phases 1 et 2, l'essentiel du CRS) fonctionne.
+
+!! ET TOUTE RÉPONSE EN FLUX EST RETENUE. La v1.2.2 bufferise dès que le
+   Content-Type de la réponse est dans SecResponseBodyMimeType, sans consulter
+   responseBodyAccess : les règles id:1001-1003 ci-dessus n'y changent rien, et
+   le corps n'est recopié qu'à la FIN de la réponse amont — donc jamais pour un
+   flux qui ne se termine pas. Concrètement : l'UI Argo CD ne se rafraîchit plus
+   (SSE sur /api/v1/stream/…, annoncé en application/json par grpc-gateway).
+   Les WebSocket ne sont pas concernés (Caddy détourne la connexion).
+   Voir README.md § « Réponses en flux ».
 {{- else }}
 
-   La phase 4 dépend d'une compilation au démarrage du pod : le WAF ne sert
-   aucun trafic tant que `caddy-plugin-build` n'a pas terminé, et l'absence
-   d'accès au proxy de modules Go empêche le pod de démarrer.
+   La phase 4 ET les réponses en flux dépendent d'une compilation au démarrage
+   du pod : le WAF ne sert aucun trafic tant que `caddy-plugin-build` n'a pas
+   terminé, et l'absence d'accès au proxy de modules Go empêche le pod de
+   démarrer. L'initContainer compile coraza-caddy/v2 avec un patch d'une ligne
+   (flush via http.ResponseController) sans lequel le SSE reste mort.
    Contournement assumé, en attendant coreruleset/coraza-crs-docker#78.
 {{- end }}
 {{- if not $reloadImg }}
 
 !! Rechargement à chaud désactivé (conteneur `coraza-reload` absent). Une
-   modification de la ConfigMap n'aura aucun effet avant un
+   modification de la
+   ConfigMap n'aura aucun effet avant un
    `kubectl -n {{ .Release.Namespace }} rollout restart daemonset/{{ include "traefik-coraza.tfFullname" . }}`.
 {{- end }}
 
@@ -102,7 +115,9 @@ Vérifications à faire maintenant :
      kubectl -n {{ .Release.Namespace }} logs ds/{{ include "traefik-coraza.tfFullname" . }} -c caddy-plugin-build
      kubectl -n {{ .Release.Namespace }} logs ds/{{ include "traefik-coraza.tfFullname" . }} -c coraza | head -50
 
-2. Le Caddyfile a bien été patché (bloc global servers + header_up) :
+2. Le Caddyfile a bien été patché (bloc global servers + header_up +
+   read_timeout 0, ce dernier pour que les réponses en flux survivent au-delà
+   des 60 s de silence du template amont) :
      kubectl -n {{ .Release.Namespace }} logs ds/traefik -c caddy-template-patch
    L'initContainer échoue bruyamment si les ancres du template amont ont bougé.
 
@@ -125,7 +140,14 @@ Vérifications à faire maintenant :
    tourner sur la configuration précédente, il n'y a pas de coupure, mais la
    ConfigMap et la config en vigueur ont divergé.
 
-6. Middlewares IP existants — il n'y a PAS de défaut global, chaque middleware
+6. Réponses en flux — sur une application qui en produit (SSE, grpc-gateway,
+   « watch » d'API), les octets doivent ressortir au fil de l'eau et non à la
+   fin. Deux compteurs de la MÊME requête, le sandwich la faisant passer deux
+   fois dans Traefik : `DownstreamContentSize` doit être non nul sur les DEUX
+   passes (`internal` et `websecure`). Un 0 côté `websecure` avec une valeur
+   côté `internal` = flux retenu par le WAF.
+
+7. Middlewares IP existants — il n'y a PAS de défaut global, chaque middleware
    doit porter ipStrategy.depth: 1, sinon il compare le pair TCP (127.0.0.1)
    et renvoie 403 :
      kubectl get middlewares -A -o json | jq -r '.items[] | select(.spec.ipAllowList or .spec.rateLimit) | "\(.metadata.namespace)/\(.metadata.name)"'

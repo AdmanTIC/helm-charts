@@ -288,10 +288,12 @@ proche. Ce qu'il coûte :
   caches vides sur `caddy:2.11.3-builder`, 1 CPU, binaire de 50 Mo. Sur un
   DaemonSet, chaque nœud repasse par là à chaque rollout, et il ne sert aucun
   trafic pendant ce temps ;
-- **les nœuds doivent joindre le proxy de modules Go au démarrage.** Sans accès,
-  l'initContainer échoue et le pod ne démarre pas — plus d'ingress sur ce nœud.
-  L'échec est bruyant, il n'y a jamais de WAF silencieusement désactivé. Un
-  `GOPROXY` interne se déclare en commentaire dans les values ;
+- **les nœuds doivent joindre le proxy de modules Go *et* github.com au
+  démarrage** — le module est cloné pour être patché avant compilation (cf.
+  § « Réponses en flux »). Sans l'un des deux accès, l'initContainer échoue et le
+  pod ne démarre pas — plus d'ingress sur ce nœud. L'échec est bruyant, il n'y a
+  jamais de WAF silencieusement désactivé. Un `GOPROXY` interne se déclare en
+  commentaire dans les values, un miroir git en changeant l'URL du clone ;
 - **la compilation consomme CPU et mémoire** au démarrage (`requests: 1 CPU,
   1 Gi`).
 
@@ -372,6 +374,132 @@ Caddy et le montage entier. `corazawaf/coraza-caddy` ne publie ni image ni
 binaire (aucun asset de release), il n'y a donc pas non plus de binaire officiel
 à injecter au démarrage.
 
+## Réponses en flux (SSE, gRPC-gateway)
+
+**Symptôme** : l'UI Argo CD ne se rafraîchit plus en arrière-plan. La page d'une
+Application affiche l'état lu au chargement et n'évolue plus. Le serveur émet
+bien — les `Watch` / `WatchResourceTree` d'`argocd-server` tiennent jusqu'à
+776 s et finissent en `grpc.code=OK` — mais rien n'arrive au navigateur.
+
+**Mesure en cluster.** Le sandwich fait passer chaque requête deux fois dans
+Traefik, donc deux compteurs sur la MÊME requête. Colonne
+`DownstreamContentSize` des logs d'accès :
+
+| flux Argo CD | Traefik → Caddy (`internal`) | Caddy → navigateur (`websecure`) |
+|---|---|---|
+| `applications`, 776,1 s | 41 815 o | **0 o** |
+| `resource-tree`, 558,8 s | 32 286 o | **0 o** |
+| `applications`, 240,8 s | 16 717 o | **0 o** |
+
+Côté Caddy : 26 requêtes `/api/v1/stream/…` abouties en `200` avec `size = 0`
+pour **toutes**, y compris sur 26,6 s et 60,0 s. Les seules réponses avec
+`size > 0` sont des `401` — courtes et complètes.
+
+**Le discriminant n'est pas la nature SSE de la réponse.** Argo CD passe par
+grpc-gateway : le client demande `Accept: text/event-stream`, le serveur répond
+`Content-Type: application/json`, en chunked, sans `Content-Length`. Ce qui
+déclenche la bufferisation est l'appartenance du Content-Type de la **réponse** à
+`SecResponseBodyMimeType`. Un correctif conditionné au Content-Type de la réponse
+ne rattraperait donc pas Argo CD, et retirer `application/json` de la liste
+reviendrait à renoncer à l'inspection de toutes les réponses JSON.
+
+### Trois défauts sur le même chemin
+
+Reproduits et corrigés sur banc local le 2026-08-19, avec l'image du sidecar
+épinglée et Caddy 2.11.3, derrière un amont qui émet une ligne JSON par seconde
+en chunked sans `Content-Length` :
+
+| # | défaut | correctif du chart |
+|---|---|---|
+| 1 | `coraza-caddy` v1.2.2 bufferise sans consulter `responseBodyAccess` | `/v2` (initContainer `caddy-plugin-build`) |
+| 2 | `coraza-caddy` v2.5.0 ne propage aucun flush | patch d'une ligne, même initContainer |
+| 3 | `read_timeout 60s` du template amont coupe les flux silencieux | `read_timeout 0` (initContainer `caddy-template-patch`) |
+
+**1. La v1.2.2 ignore `responseBodyAccess`.** `stream.go` ne décide de laisser
+passer (`stream = true`) qu'à partir de `IsResponseBodyProcessable()`, donc du
+seul Content-Type ; `IsResponseBodyAccessible()` n'est **jamais** consulté. La
+règle `id:1003` livrée par ce chart —
+`ctl:responseBodyAccess=Off` sur `Accept: text/event-stream` — ne protège donc
+rien. Pire, `coraza.go` ne recopie le tampon vers le client qu'**après** le
+retour de `next.ServeHTTP`, et le jette purement et simplement si celui-ci
+remonte une erreur : d'où les `size = 0` même sur des flux terminés.
+
+**2. La v2.5.0 ne propage aucun flush.** Le `/v2` corrige la phase 4 et rend
+`id:1003` opérante — vérifié : `p4=0` et `RESPONSE_BODY` vide sur une requête
+portant l'en-tête `Accept`, donc Coraza ne bufferise plus. Le flux reste pourtant
+bloqué, parce que `rwInterceptor.Flush()` fait :
+
+```go
+if flusher, ok := i.w.(http.Flusher); ok {
+	flusher.Flush()
+}
+```
+
+or Caddy n'implémente plus `Flush()` sur ses ResponseWriter depuis 2.6.3 :
+`caddyhttp.responseRecorder` expose `FlushError() error`, et
+`caddyhttp.ResponseWriterWrapper` seulement `Unwrap()`. L'assertion échoue
+**toujours**, aucun flush n'atteint le client, et le `flush_interval` de la
+ReverseProxy — pourtant bien à « immédiat », `Content-Length` étant absent — n'a
+rien à pousser. Conséquence : **toute** réponse en flux traversant `coraza_waf`
+est retenue jusqu'à la fin de la réponse amont, y compris celles que le WAF ne
+bufferise pas. Le correctif est d'une ligne, et part en PR tel quel :
+
+```diff
+ 	i.flushWriteHeader()
+-	if flusher, ok := i.w.(http.Flusher); ok {
+-		flusher.Flush()
+-	}
++	//nolint:errcheck
++	http.NewResponseController(i.w).Flush()
+```
+
+`http.ResponseController` reconnaît `FlushError()`, `Flush()` et `Unwrap()` : il
+marche avec les ResponseWriter de `net/http` comme avec ceux de Caddy.
+
+**3. Le template amont coupe les flux silencieux à 60 s.** Le `Caddyfile` de
+l'image pose `read_timeout ${PROXY_TIMEOUT}` (60 s par défaut) sur le transport
+du `reverse_proxy`, et Caddy réarme ce délai avant **chaque** lecture amont : un
+flux qui n'émet rien pendant plus de 60 s est coupé, avec exactement l'erreur
+observée en cluster (`aborting with incomplete response … i/o timeout`).
+Mesuré : coupure à 60,0 s pile avec le template amont, flux intact au-delà de
+70 s de silence avec `read_timeout 0`. La contrepartie est documentée dans les
+values : `dial_timeout` et `write_timeout` gardent leurs 60 s, un backend
+injoignable échoue donc toujours vite.
+
+### Résultats de banc
+
+| chaîne | flux JSON chunked | réponse courte |
+|---|---|---|
+| Caddy seul, sans `coraza_waf` | 1 ligne/s | ok |
+| image amont (v1.2.2) | **tout à la fin** | phases 3+5, `p4=0`, corps vide |
+| v2.5.0 seul (le `/v2`) | **tout à la fin** | phases 3+4+5, corps lu |
+| v2.5.0 + patch de flush | **1 ligne/s** | phases 3+4+5, corps lu |
+| + `read_timeout 0` | survit à 70 s de silence | inchangé |
+
+### Non-régression, à rejouer à chaque bump
+
+1. un amont qui émet une ligne par seconde en `Content-Type: application/json`,
+   en chunked, **sans** `Content-Length` ;
+2. à travers le WAF, `curl -N --no-buffer -H 'Accept: text/event-stream'` : les
+   lignes doivent arriver **une par seconde**. Un client qui bufferise lui-même
+   masque le résultat — préférer une lecture socket brute horodatée ;
+3. **la même requête sans l'en-tête `Accept`** doit rester bufferisée et
+   inspectée : c'est ce qui prouve que le correctif ne désarme pas l'inspection ;
+4. une réponse courte et complète doit continuer à déclencher les phases 3, 4 et
+   5 (règle `id:1201` des values, `RESPONSE_BODY` non vide dans l'audit) ;
+5. un flux silencieux plus de 60 s doit survivre.
+
+Critère de sortie en cluster : sur `/api/v1/stream/applications`, le
+`DownstreamContentSize` de la passe `websecure` devient non nul et suit celui de
+la passe `internal`.
+
+### Ce qui n'est pas concerné
+
+Les **WebSocket** passent, avant comme après : Caddy détourne la connexion
+(`Hijack`) et court-circuite tout le chemin de réponse bufferisé. Vérifié en
+cluster (430/430 sur `grafana…/api/live/ws`, octets délivrés). Le périmètre du
+défaut est la réponse HTTP en flux, pas l'upgrade.
+
 ## Rechargement à chaud de la configuration
 
 Modifier `coraza.config` ou `coraza.extraRules` met à jour la ConfigMap, donc le
@@ -431,9 +559,29 @@ pas les pods : il faut un
   per-transaction, donc intact.
 - **Audit log** : les entrées `"transaction"` sont absentes avec l'image amont —
   même cause que la phase 4, et même correctif (voir ci-dessus).
-- **Non testés** : WebSocket, SSE, gRPC, upload au-delà de
-  `SecRequestBodyLimit`, renouvellement ACME réel, ajout d'un Ingress avec un
-  nouveau host, kill du sidecar.
+- **Non testés** : gRPC, upload au-delà de `SecRequestBodyLimit`,
+  renouvellement ACME réel, ajout d'un Ingress avec un nouveau host, kill du
+  sidecar. WebSocket et SSE, eux, sont mesurés — cf. § « Réponses en flux ».
+- **Réponses compressées** : si le client demande `gzip`, Caddy relaie la
+  réponse compressée telle quelle et la phase 4 inspecte des octets compressés —
+  les règles RESPONSE-95x sont aveugles sur ces réponses. **Mesuré** sur banc :
+  une règle `phase:4` cherchant un marqueur en clair ne se déclenche pas, et
+  `RESPONSE_BODY` contient bien du gzip. La phase 4 vaut donc pour les réponses
+  non compressées, pas comme protection générale.
+
+  Remède mesuré, **non appliqué** : neutraliser la compression en amont du WAF
+  (`header_up Accept-Encoding identity` dans le patch du Caddyfile) et
+  recompresser pour le client avec un middleware `compress` de Traefik sur
+  l'IngressRoute catch-all — Coraza voit alors le corps en clair, le client
+  reçoit du gzip. Deux points vérifiés : la recompression doit être faite par
+  Traefik et **pas** par un `encode` dans le sidecar, `order coraza_waf first`
+  rendant `coraza_waf` le handler le plus externe (un `encode` interne
+  compresserait avant l'inspection) ; et le `compress` de Traefik propage bien
+  `Flush()`, il ne recasse donc pas les flux. À trancher d'abord : la
+  compression migre des applications vers l'edge, Coraza transporte des corps
+  pleine taille, `responseBodyLimit` (512 Kio) est atteint bien plus souvent
+  donc `ProcessPartial` aussi, et un middleware `compress` déjà accroché à un
+  Ingress applicatif compresserait sur la passe `internal`, donc avant Coraza.
 - Le patch du Caddyfile par initContainer est un contournement. Un point
   d'extension propre côté `coreruleset/coraza-crs-docker` serait préférable.
 - **`DetectionOnly` neutralise aussi les `deny` explicites**, y compris ceux des

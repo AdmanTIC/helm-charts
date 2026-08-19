@@ -40,7 +40,11 @@ data:
     # Le sandwich rend la phase 4 ATTEIGNABLE, mais elle n'est réellement
     # exécutée que si le binaire Caddy embarque coraza-caddy >= v2 : la v1.2.2
     # livrée par l'image amont n'appelle jamais ProcessResponseBody().
-    # Voir coraza.imageSupportsPhase4 et README § « Inspection des réponses ».
+    # ⚠️ Le Content-Type d'une RÉPONSE listé ici la fait bufferiser, flux
+    #    compris : les réponses grpc-gateway d'Argo CD sont du SSE annoncé en
+    #    `application/json`. Ce sont les règles id:1001-1003 ci-dessous qui les
+    #    exemptent — et elles n'ont d'effet qu'avec coraza-caddy >= v2 patché.
+    # Voir README §§ « Inspection des réponses » et « Réponses en flux ».
     SecResponseBodyAccess {{ include "traefik-coraza.secFlag" $c.responseBodyAccess }}
     SecResponseBodyMimeType {{ $c.responseBodyMimeType }}
     SecResponseBodyLimit {{ int $c.responseBodyLimit }}
@@ -73,6 +77,11 @@ data:
 {{ end }}
 {{- if $c.builtinExclusions.streamingProtocols }}
     # --- streaming : l'inspection de corps casse WebSocket / gRPC / SSE ---
+    # ⚠️ `ctl:responseBodyAccess=Off` n'est honoré qu'à partir de coraza-caddy
+    #    v2 : en v1.2.2 la bufferisation ne dépend que du Content-Type de la
+    #    réponse, et ces trois règles ne protègent rien. Et même en v2, il faut
+    #    le patch de flush du chart pour que les octets ressortent au fil de
+    #    l'eau. Voir values.yaml § « réponses en flux ».
     SecRule REQUEST_HEADERS:Upgrade "@streq websocket" \
       "id:1001,phase:1,pass,nolog,ctl:requestBodyAccess=Off,ctl:responseBodyAccess=Off"
     SecRule REQUEST_HEADERS:Content-Type "@beginsWith application/grpc" \
