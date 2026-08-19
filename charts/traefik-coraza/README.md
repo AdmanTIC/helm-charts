@@ -136,7 +136,7 @@ fait qu'il n'y a qu'un ingress controller.
 ## Avant la première installation
 
 1. **Tag de l'image Coraza** — il vaut `…:TAG` et doit être épinglé avant tout
-   `helm install`, **aux trois endroits** (voir la section suivante). `latest` est
+   `helm install`, **aux deux endroits** (voir la section suivante). `latest` est
    exclu : l'initContainer patche un template livré par l'image, une dérive
    silencieuse casserait le patch au pire moment.
 
@@ -169,14 +169,13 @@ fait qu'il n'y a qu'un ingress controller.
          depth: 1
    ```
 
-## Le tag de l'image est écrit trois fois
+## Le tag de l'image est écrit deux fois
 
-Dans `traefik.deployment.initContainers` (patch du Caddyfile) et deux fois dans
-`traefik.deployment.additionalContainers` : le sidecar `coraza` qui consomme le
-template patché, et `coraza-reload` dont le binaire `caddy` réadapte le Caddyfile
-pour l'API admin. Les trois doivent porter le **même** tag, sinon l'initContainer
-patche un template issu d'une version différente de celle qui le lit.
-`NOTES.txt` affiche les trois images au déploiement et signale une divergence.
+Dans `traefik.deployment.initContainers` (patch du Caddyfile) et dans
+`traefik.deployment.additionalContainers` (sidecar qui le consomme). Les deux
+doivent porter le **même** tag, sinon l'initContainer patche un template issu
+d'une version différente de celle qui le lit. `NOTES.txt` affiche les deux
+images au déploiement et signale une divergence.
 
 Il n'existe pas de valeur unique possible : le chart Traefik rend ces tableaux
 avec `toYaml` **sans `tpl`**, donc aucune valeur du parent ne peut les alimenter,
@@ -193,7 +192,7 @@ Deux conséquences pour ArgoCD et `-f` :
   tag : il réduit le sidecar à cette seule clé et supprime `name`, `env`,
   `volumeMounts` et `NET_BIND_SERVICE`.
 
-Voie normale : éditer les trois tags dans `values.yaml` et bumper `version` dans
+Voie normale : éditer les deux tags dans `values.yaml` et bumper `version` dans
 `Chart.yaml`. Pour surcharger depuis l'extérieur, il faut redonner les deux
 tableaux **entiers**.
 
@@ -273,8 +272,7 @@ de chaque pod** plutôt que de publier une image :
 ```
 initContainer caddy-plugin-build   image officielle caddy:<version>-builder
   └─ xcaddy build --with github.com/corazawaf/coraza-caddy/v2@v2.5.0
-       └─ emptyDir caddy-bin  →  monté par-dessus /usr/bin/caddy
-                                 dans `coraza` et dans `coraza-reload`
+       └─ emptyDir caddy-bin  →  monté par-dessus /usr/bin/caddy dans `coraza`
 ```
 
 Rien à construire, à publier, ni à maintenir : ni registre, ni chaîne de build,
@@ -309,7 +307,7 @@ exactement le piège dans lequel l'image amont est tombée.
 
 ### Le jour où la correction amont est publiée
 
-Reprendre le tag officiel dans les trois conteneurs, supprimer l'initContainer
+Reprendre le tag officiel dans les deux conteneurs, supprimer l'initContainer
 `caddy-plugin-build`, le volume `caddy-bin` et ses deux montages. `NOTES.txt`
 détecte l'absence de l'initContainer et redescend l'avertissement « phase 4
 inactive » si le tag utilisé n'embarque pas encore le correctif.
@@ -372,55 +370,60 @@ Caddy et le montage entier. `corazawaf/coraza-caddy` ne publie ni image ni
 binaire (aucun asset de release), il n'y a donc pas non plus de binaire officiel
 à injecter au démarrage.
 
-## Rechargement à chaud de la configuration
+## Prise en compte des changements de configuration
 
 Modifier `coraza.config` ou `coraza.extraRules` met à jour la ConfigMap, donc le
-fichier monté — mais **Coraza ne relit ses `include` qu'au provisioning du
-module Caddy**. Sans mécanisme dédié, un `helm upgrade` ne change rien tant que
-le pod n'est pas recréé, ce qui coupe le trafic du nœud sur un DaemonSet.
+fichier monté — mais **Coraza ne relit ses `include` qu'au provisioning du module
+Caddy**. Sans mécanisme dédié, un `helm upgrade` ne change rien tant que le pod
+n'est pas recréé, ce qui sur un DaemonSet coupe le trafic du nœud *et* relance la
+compilation du binaire.
 
-Le conteneur `coraza-reload` (dans `traefik.deployment.additionalContainers`)
-supprime ce redémarrage :
+Une `livenessProbe` sur le conteneur `coraza` fait redémarrer **ce conteneur
+seulement** :
 
-1. il surveille l'empreinte de `/opt/coraza/config.d/*.conf` ;
-2. au changement, il appelle l'API admin de Caddy — `127.0.0.1:2019`, atteignable
-   parce que les conteneurs d'un pod partagent la pile réseau, et jamais exposée
-   hors du pod ;
-3. il inscrit l'empreinte de la configuration dans le Caddyfile, sous forme de
-   `directives \`# config-revision <md5>\`` — un simple commentaire SecLang ;
-4. `caddy reload --force`.
+1. elle compare l'empreinte de `/opt/coraza/config.d/*.conf` à celle qu'a
+   effectivement chargée le processus en cours ;
+2. si elle a changé, elle exécute `caddy validate` — qui provisionne réellement
+   le module, donc compile les règles et charge le CRS, sans ouvrir de port ;
+3. si la configuration est valide, la sonde échoue et kubelet redémarre le
+   conteneur. Sinon elle réussit : **rien ne bouge**, le WAF continue sur la
+   configuration précédente et le refus est journalisé.
 
-Les points 3 et 4 ont chacun leur raison, et aucune n'est superflue :
+Ce que ça coûte et ce que ça évite :
 
-- **`--force`** : Caddy compare le **JSON adapté**, pas les fichiers inclus. Le
-  Caddyfile n'ayant pas bougé, il répondrait sinon `config is unchanged`.
-- **le marqueur de révision** : coraza-caddy v2 conserve ses instances WAF dans
-  un pool dont la clé ne hache que les **chemins** d'`include` et la chaîne
-  `directives` — jamais le contenu des fichiers. Sans changement de clé, le
-  rechargement journalise `reusing existing WAF instance from pool`, réutilise le
-  WAF existant, et **les règles ne sont pas relues** : le rechargement paraît
-  réussir sans rien changer. C'est le mode d'échec le plus traître de tout ce
-  montage, il a été reproduit puis corrigé par ce marqueur. Il n'existait pas
-  avec la v1.2.2, qui n'avait pas de pool — mais la v1.2.2 n'a pas de phase 4.
+| | |
+|---|---|
+| coupure du WAF | **~2 s**, mesurée, fail-closed (502) |
+| pod recréé | non — Traefik continue de servir |
+| binaire recompilé | non — il vit dans un `emptyDir` de pod, qui survit au redémarrage du conteneur |
+| redémarrages par changement | exactement un |
 
-Le rechargement est gracieux : les connexions en cours sont préservées. Si la
-nouvelle configuration est invalide, le rechargement est refusé, le WAF continue
-sur la précédente et la boucle réessaie — l'échec est journalisé,
-`kubectl logs … -c coraza-reload`.
+**Les deux gardes anti-CrashLoopBackOff**, chacune pour un mode d'échec observé :
 
-Latence : propagation kubelet de la ConfigMap (~1 min) + l'intervalle de la
-boucle (10 s).
+- **la validation préalable.** Sans elle, une règle invalide poussée dans la
+  ConfigMap empêcherait le conteneur de repartir : redémarrage, échec,
+  redémarrage… et le WAF étant fail-closed, le nœud ne servirait plus rien du
+  tout. Une erreur de syntaxe dans `extraRules` ne doit jamais pouvoir couper
+  l'ingress.
+- **la référence ancrée sur le processus.** La sonde mémorise l'empreinte avec
+  l'heure de démarrage de PID 1, et non dans un fichier supposé neuf à chaque
+  redémarrage : selon le runtime, la couche inscriptible du conteneur **survit**
+  au redémarrage. La version naïve rebouclait — reproduit, puis corrigé.
 
-C'est aussi la raison du volume `caddy-etc` : le reloader a besoin du Caddyfile
-**rendu** par l'entrypoint du sidecar, et les systèmes de fichiers des
-conteneurs d'un pod sont cloisonnés.
+### Pourquoi pas `caddy reload`
 
-**Pour s'en passer** — infrastructures où un changement de configuration doit
-passer par un redémarrage explicite et daté : supprimer le conteneur
-`coraza-reload` et le volume `caddy-etc` des values. `NOTES.txt` le détecte et
-rappelle alors la commande de redémarrage. Un `helm upgrade` seul ne recréera
-pas les pods : il faut un
-`kubectl -n <ns> rollout restart daemonset/traefik`.
+Un rechargement gracieux ne coûterait aucune coupure. Il a été essayé, et il ne
+marche pas ici : coraza-caddy v2 conserve ses instances WAF dans un pool dont la
+clé ne hache que les **chemins** d'`include` et la chaîne `directives` — jamais
+le contenu des fichiers. Le rechargement journalise
+`reusing existing WAF instance from pool`, réutilise le WAF existant et **ne relit
+pas les règles** : il paraît réussir sans rien changer. C'est le mode d'échec le
+plus traître de tout ce montage.
+
+Il est contournable — inscrire l'empreinte de la configuration dans le Caddyfile
+via `directives` change la clé du pool — mais cela repose sur un détail interne
+d'amont, et l'écart de coupure avec le redémarrage est de 2 s. Le redémarrage a
+été préféré.
 
 ## Limites connues
 
