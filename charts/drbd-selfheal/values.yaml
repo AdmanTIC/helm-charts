@@ -1,52 +1,64 @@
-# Détection et auto-guérison des défauts de resynchronisation DRBD 9.3.3. Conception et
-# preuves : `docs/08-exploitation/projet-drbd-resync-calee.md` du dépôt IaC.
+# Détection et auto-guérison des défauts de resynchronisation DRBD (établis sur 9.3.3) :
+# resynchronisation calée et bitmap périmé entre deux répliques UpToDate.
 #
-# 🛑 LE BALAYEUR EST ARMÉ depuis le 2026-08-18 (`controller.dryRun: false`) : il exécute
-# réellement `drbdadm disconnect`/`connect` dès qu'un verdict franchit tous les garde-fous.
-# Le chart avait été livré en mode observation ; l'armement est une décision d'exploitation.
-#
-# ⚠️ La campagne de resynchronisations forcées de la matrice de test du README n'a PAS été
-# menée en mode observation avant l'armement. Le scénario `drbdadm verify` reste donc à mener
-# avec prudence : il fabrique la signature exacte du défaut 2, et seul
-# `has-online-verify-details` l'écarte.
+# 🛑 LIVRÉ EN MODE OBSERVATION (`controller.dryRun: true`) : le balayeur détecte, journalise,
+# publie ses métriques et alerte, mais n'exécute AUCUN `drbdadm`. L'armement
+# (`controller.dryRun: false`) est une décision d'exploitation, à prendre après avoir vu ses
+# verdicts sur des cas réels du cluster visé.
 
-# ⚠️ Tout est déposé dans `piraeus-datastore`, et NON dans un namespace dédié. Deux raisons,
-# dans cet ordre :
+# ⚠️ TOUT EST DÉPOSÉ DANS LE NAMESPACE DES SATELLITES LINSTOR, et non dans un namespace
+# dédié — c'est une contrainte, pas une préférence : le balayeur doit `exec` dans les pods
+# satellites, et un `Role` namespacé y suffit là où un namespace séparé imposerait un
+# `ClusterRole`. Le Pushgateway y est déposé pour la même raison — un cloisonnement réseau
+# par défaut (NetworkPolicy de refus) laisse alors le trafic intra-namespace passer sans
+# règle supplémentaire.
 #
-#   1. `charts/network-policies` est en `mode: enforce` et pose un refus par défaut sur
-#      l'ENTRANT de tous les pods. Un namespace absent de sa liste `namespaces` n'a alors
-#      aucun flux entrant, PAS MÊME depuis ses propres pods : le balayeur ne pourrait plus
-#      joindre son Pushgateway. `piraeus-datastore` y figure déjà, et Prometheus y a déjà
-#      l'accès inter-namespace (`crossNamespace`), donc la collecte fonctionne sans toucher
-#      au cloisonnement.
-#   2. Le balayeur doit `exec` dans les satellites : un `Role` local vaut mieux qu'un
-#      `ClusterRole`.
+# Vide = namespace de la release. Renseigner cette valeur uniquement si les manifestes
+# doivent atterrir ailleurs que là où Helm/Argo CD installe la release — auquel cas ce
+# namespace doit rester CELUI DES SATELLITES.
 #
-# ⚠️ Ce namespace est créé par le kustomize de l'opérateur Piraeus, donc par OpenTofu. Cette
-# Application ne doit pas le créer (pas de `CreateNamespace=true`).
-namespace: piraeus-datastore
+# ⚠️ Ce namespace est en général créé par l'installation de l'opérateur Piraeus, pas par ce
+# chart : ne pas l'assortir d'une création automatique (`CreateNamespace=true` côté Argo CD)
+# si un autre outil en a la propriété.
+namespace: ""
 
-# Label de rôle des nœuds, identique au reste du dépôt. Le balayeur et son puits tournent
-# sur un worker : ils n'ont aucune raison d'occuper un nœud storage, et les autres rôles sont
-# taintés.
-nodeRoleLabel: ffvolley.org/role
+# ─── Placement ───────────────────────────────────────────────────────────────
+#
+# Vides par défaut : le chart ne présume AUCUNE convention de labels ni de taints de nœuds.
+# Le balayeur et son puits joignent les satellites par l'API Kubernetes — ils n'ont aucune
+# raison d'occuper un nœud de stockage, mais rien ne les y contraint non plus.
+#
+# Sur un cluster dont les nœuds portent des rôles, y épingler les deux pods, p. ex. :
+#   nodeSelector:
+#     node-role.kubernetes.io/worker: ""
+nodeSelector: {}
+tolerations: []
+affinity: {}
 
 # ─── Collecte ────────────────────────────────────────────────────────────────
 #
-# `drbd-reactor` tourne DÉJÀ dans chaque pod satellite avec son plugin prometheus actif
-# (`address = ":9942"`, `enums = true`, port nommé `prometheus`). Il ne manquait que la
-# collecte : ni Service, ni ServiceMonitor, ni PodMonitor n'existaient au 2026-08-17.
+# `drbd-reactor` tourne DÉJÀ dans chaque pod satellite Piraeus avec son plugin prometheus
+# actif (`address = ":9942"`, `enums = true`, port nommé `prometheus`). Il ne manque, en
+# général, que la collecte : l'installation par défaut ne pose ni Service, ni ServiceMonitor,
+# ni PodMonitor devant ce port.
 collecte:
-  # Sélecteur des pods satellites, relevé sur le cluster.
+  # Sélecteur des pods satellites.
   satelliteSelector:
     app.kubernetes.io/component: linstor-satellite
   # Port NOMMÉ dans le pod : d'où le PodMonitor, qui dispense de créer un Service.
   portName: prometheus
   interval: 30s
-  # 🛑 Label EXIGÉ par le `podMonitorSelector` / `ruleSelector` du Prometheus en place
-  # (`matchLabels: {release: kube-prometheus-stack}`). Sans lui, les objets sont créés,
-  # acceptés, et purement et simplement IGNORÉS — aucune erreur nulle part.
-  prometheusReleaseLabel: kube-prometheus-stack
+  # 🛑 LABELS QUE L'OPÉRATEUR PROMETHEUS EXIGE POUR RETENIR LES OBJETS. Le
+  # `podMonitorSelector` / `serviceMonitorSelector` / `ruleSelector` du Prometheus en place
+  # les impose : sans eux, PodMonitor, ServiceMonitor et PrometheusRule sont créés, acceptés,
+  # et purement et simplement IGNORÉS — aucune erreur nulle part.
+  #
+  # Vide = aucun label ajouté, ce qui convient à un Prometheus dont les sélecteurs sont
+  # ouverts. kube-prometheus-stack, lui, retient par défaut `release: <nom de la release
+  # kube-prometheus-stack>` :
+  #   prometheusLabels:
+  #     release: kube-prometheus-stack
+  prometheusLabels: {}
 
 # ─── Puits de métriques du balayeur ──────────────────────────────────────────
 #
@@ -69,10 +81,11 @@ controller:
   # 🛑 ARMEMENT DU BALAYEUR. `true` = détecte, journalise, publie, n'agit pas.
   # `false` = exécute réellement `drbdadm disconnect`/`connect`.
   #
-  # ⚠️ Passé à `false` — le balayeur est ARMÉ — le 2026-08-18. Ne pas le remettre à `true` par
-  # inadvertance en fusionnant une branche plus ancienne : cela DÉSARMERAIT le déblocage
-  # automatique sans que rien ne le signale.
-  dryRun: false
+  # ⚠️ Le passage à `false` est une DÉCISION D'EXPLOITATION : ne l'engager qu'après avoir
+  # confronté, sur le cluster visé, les verdicts du mode observation aux journaux des jobs et
+  # à l'alerte `DrbdSelfHealDetecteSansAgir`. Une fois armé, veiller à ne pas revenir à `true`
+  # par inadvertance : cela DÉSARMERAIT le déblocage automatique sans que rien ne le signale.
+  dryRun: true
 
   # Cycle de balayage. 5 min : chaque exécution ne prouve rien à elle seule, la preuve de
   # stagnation se construit sur PLUSIEURS exécutions (voir `seuils` ci-dessous).
@@ -81,9 +94,11 @@ controller:
   # 🛑 `Forbid` : deux balayeurs concurrents pourraient agir deux fois sur la même paire.
   concurrencyPolicy: Forbid
 
-  # Durée mesurée sur le cluster : 60 s d'attente + 12 satellites × 5 relevés × 0,42 s
-  # ≈ 66 s. La marge est de 1,8×. Le script s'impose lui-même `budgetSeconds` pour sortir
-  # PROPREMENT — donc en journalisant et en publiant — plutôt que d'être tué par le kubelet.
+  # Ordre de grandeur mesuré : 60 s d'attente + (nombre de satellites × `sampleCount` relevés
+  # × ~0,4 s d'`exec`) — soit ≈ 66 s pour une douzaine de satellites, donc une marge de 1,8×.
+  # ⚠️ À relever sur un cluster nettement plus large. Le script s'impose lui-même
+  # `budgetSeconds` pour sortir PROPREMENT — donc en journalisant et en publiant — plutôt que
+  # d'être tué par le kubelet.
   activeDeadlineSeconds: 120
   budgetSeconds: 105
 
@@ -94,10 +109,10 @@ controller:
 
   # Historique de jobs conservé par le CronJob.
   #
-  # ⚠️ Ce sont les jobs RÉUSSIS qu'on vient lire en mode observation : ce sont eux qui portent
-  # les lignes `VERDICT …`, donc les décisions à confronter avant d'armer le balayeur. D'où un
-  # historique de succès plus PROFOND que celui des échecs — 15 succès à raison d'un cycle de
-  # 5 min font 1 h 15 de verdicts consultables.
+  # ⚠️ Ce sont les jobs RÉUSSIS qu'on vient lire, en mode observation comme après armement :
+  # eux seuls portent les lignes `VERDICT …`, donc les décisions à confronter avant d'armer le
+  # balayeur. D'où un historique de succès plus PROFOND que celui des échecs — 15 succès à
+  # raison d'un cycle de 5 min font 1 h 15 de verdicts consultables.
   #
   # Un job en échec, lui, n'a produit aucun verdict : il n'apprend que la panne elle-même, et
   # 5 suffisent à la caractériser.
@@ -138,7 +153,7 @@ controller:
   #
   # Le défaut 2 met en jeu deux répliques UpToDate, donc apparemment saines. Le risque est
   # borné : à la reconnexion DRBD compare les UUID courants et, s'ils concordent — ce que le
-  # journal noyau du 2026-08-17 a établi — purge le bitmap sans transférer un octet. S'ils
+  # journal noyau permet de vérifier — purge le bitmap sans transférer un octet. S'ils
   # divergent réellement, les politiques `after-sb-*` par défaut laissent la connexion en
   # `StandAlone` plutôt que d'écraser silencieusement un côté.
   actOnStalledResync: true
@@ -151,15 +166,14 @@ controller:
   # qui diverge vraiment et le remarque, et l'alerte `DrbdSelfHealDivergenceReelle` porte le
   # constat à un humain — car la vérification DÉTECTE, elle ne répare pas.
   #
-  # ⚠️ L'ORDRE INVERSE — vérifier AVANT d'agir — a été essayé le 2026-08-18 et ABANDONNÉ : il
-  # ne peut pas fonctionner. Sur un bitmap DÉJÀ sale, `drbdadm verify` ré-annonce les bits
+  # ⚠️ L'ORDRE INVERSE — vérifier AVANT d'agir — a été essayé, puis ABANDONNÉ : il ne peut pas
+  # fonctionner. Sur un bitmap DÉJÀ sale, `drbdadm verify` ré-annonce les bits
   # posés. Deux vérifications successives ont rendu « found 16 4k blocks out of sync! » alors
   # que les empreintes md5 des deux répliques étaient IDENTIQUES sur la région visée. Le signal
   # ne vaut que si le bitmap était propre AVANT — or le défaut 2 est par définition un bitmap
   # déjà sale. Une barrière préalable aurait refusé indéfiniment, rendant le composant inerte.
   #
-  # ⚠️ `has-online-verify-details` ne remplace rien non plus : relevé le même jour, ce drapeau
-  # retombe à faux dès la FIN de la vérification alors que les bits sales subsistent. Il ne
+  # ⚠️ `has-online-verify-details` ne remplace rien non plus : ce drapeau retombe à faux dès la FIN de la vérification alors que les bits sales subsistent. Il ne
   # couvre donc que la durée du verify, fenêtre déjà couverte par `repl != Established`.
   #
   # Coût : une vérification de quelques minutes après chaque intervention (241 s pour 10 GiB,
@@ -171,11 +185,11 @@ controller:
   # LINSTOR dépose dans `/var/lib/linstor.d`. Un écart signale une resource que plus personne ne
   # réconcilie.
   #
-  # Arrivé le 2026-08-18 : la suppression d'une ligne interne de la base LINSTOR a laissé sur
-  # `worker3` une resource encore présente dans le noyau, `StandAlone` vers ses trois pairs, sans
-  # quorum, E/S suspendues, pendant quatorze heures. Trois alertes se déclenchaient sur ses
-  # SYMPTÔMES, aucune ne la nommait. Et l'enjeu dépassait le bruit : un pod planifié sur ce nœud
-  # aurait vu le CSI demander une resource du même nom, à laquelle ce fantôme se serait opposé.
+  # Cas observé : la suppression d'une ligne interne de la base LINSTOR laisse sur un nœud une
+  # resource encore présente dans le noyau, `StandAlone` vers ses pairs, sans quorum, E/S
+  # suspendues, indéfiniment. Les alertes de santé se déclenchent alors sur ses SYMPTÔMES sans
+  # qu'aucune ne la nomme. Et l'enjeu dépasse le bruit : un pod planifié sur ce nœud verrait le
+  # CSI demander une resource du même nom, à laquelle ce fantôme s'opposerait.
   #
   # ⚠️ CONSTAT SEUL, JAMAIS D'ACTION. `drbdsetup down` sur une resource réellement utilisée
   # couperait un volume vivant, et le balayeur ne peut pas distinguer « oubliée » de « en cours
@@ -200,34 +214,35 @@ controller:
 
   # Resources que le balayeur ne doit jamais toucher, par nom DRBD exact.
   #
-  # `selfhealtest` est la resource LINSTOR dédiée à la CAMPAGNE DE NON-DÉTECTION, et son nom
-  # figure ici À DEMEURE. Elle est volontairement nommée en clair plutôt que créée comme PVC :
-  # un `pvc-<uid>` est tiré au hasard à la création, donc l'exclusion ne pourrait être écrite
-  # qu'APRÈS coup — exactement l'inverse de ce qu'il faut. Avec un nom fixe, l'exclusion
-  # PRÉCÈDE toujours l'existence du volume d'essai. La laisser hors campagne ne coûte rien :
-  # un nom que `drbdsetup status` ne rapporte pas est simplement sans effet.
+  # 🛑 UTILISER L'EXCLUSION, ET NON `dryRun: true`, POUR MENER UNE CAMPAGNE D'ESSAIS SUR UN
+  # BALAYEUR ARMÉ. L'exclusion est un garde-fou : la DÉTECTION reste entière — journal,
+  # `drbd_selfheal_detected`, `drbd_selfheal_blocked{reason="resource_exclue"}`, alertes — et
+  # seule l'ACTION est retenue. On lit donc le verdict du balayeur sans le payer, là où
+  # `dryRun: true` désarmerait le balayeur pour TOUT le cluster pendant toute la campagne.
   #
-  # 🛑 POURQUOI L'EXCLUSION ET NON `dryRun: true` LE TEMPS DES TESTS. L'exclusion est un
-  # garde-fou : la DÉTECTION reste entière — journal, `drbd_selfheal_detected`,
-  # `drbd_selfheal_blocked{reason="resource_exclue"}`, alertes — et seule l'ACTION est retenue.
-  # On lit donc le verdict du balayeur sans le payer, alors que `dryRun: true` désarmerait le
-  # balayeur pour TOUT le cluster pendant toute la campagne.
-  excludedResources:
-    - selfhealtest
+  # ⚠️ Une resource d'essai gagne à être créée sous un NOM LINSTOR EN CLAIR plutôt que comme
+  # PVC : un `pvc-<uid>` est tiré au hasard à la création, donc l'exclusion ne pourrait être
+  # écrite qu'APRÈS coup — l'inverse de ce qu'il faut. Un nom qui ne correspond à aucune
+  # resource rapportée par `drbdsetup status` est simplement sans effet.
+  excludedResources: []
 
   # ConfigMap portant les séries entre deux exécutions.
   #
-  # 🛑 `data.state.json` est écrit À L'EXÉCUTION. L'Application porte un `ignoreDifferences`
-  # ET `RespectIgnoreDifferences=true` : sans la seconde option, `ignoreDifferences` ne
-  # masque l'écart qu'à la COMPARAISON, la synchronisation réappliquant le manifeste — donc
-  # remettant l'état à vide. Leçon déjà payée sur `vip-failover`.
+  # 🛑 `data.state.json` EST ÉCRIT À L'EXÉCUTION, donc en écart permanent avec le manifeste.
+  # Sous un déploiement réconcilié en continu (Argo CD, Flux), il faut EXCLURE ce champ de la
+  # synchronisation, pas seulement de la comparaison. Côté Argo CD, cela suppose les deux à la
+  # fois : un `ignoreDifferences` sur `/data/state.json` ET l'option de synchronisation
+  # `RespectIgnoreDifferences=true`. Sans la seconde, la synchronisation réapplique le
+  # manifeste — donc remet l'état à vide, et le balayeur n'atteint JAMAIS ses seuils.
   stateConfigMap: drbd-selfheal-state
 
 # ─── Tableau de bord ─────────────────────────────────────────────────────────
 #
-# Chargé par le sidecar `grafana-sc-dashboard`, relevé sur le cluster en `METHOD=WATCH`,
-# `NAMESPACE=ALL` : un ConfigMap portant le bon label suffit, où qu'il soit. Rien à déposer
-# dans le namespace `monitoring`, dont OpenTofu garde la propriété.
+# Chargé par le sidecar `grafana-sc-dashboard` (kube-prometheus-stack) : un ConfigMap portant
+# le bon label suffit. ⚠️ Si ce sidecar tourne avec `NAMESPACE` restreint à celui de Grafana
+# plutôt qu'en `NAMESPACE=ALL`, ce ConfigMap ne sera pas vu depuis le namespace des
+# satellites — mettre alors `dashboard.enabled: false` et déposer le tableau de bord
+# autrement.
 #
 # Les séries y prennent `palette-classic-by-name` : Grafana affecte alors la teinte d'après le
 # NOM de la série et non son rang, donc un filtre de volume ne repeint pas les paires
@@ -241,6 +256,10 @@ dashboard:
 # ─── Alertes ─────────────────────────────────────────────────────────────────
 alertes:
   enabled: true
+
+  # Runbook cité par les alertes : chemin de document, URL, ticket… Vide = les descriptions
+  # renvoient à « le runbook d'exploitation » sans lien, et l'annotation `runbook` est omise.
+  runbook: ""
 
   # ⚠️ Les deux alertes de défaut sont un FILET DE SÉCURITÉ, pas le détecteur principal.
   # `drbd-reactor` n'exportant ni l'état de réplication ni l'état de disque du pair, elles ne
@@ -258,16 +277,14 @@ alertes:
   connexionDegradeeFor: 10m
   quorumPerduFor: 5m
 
-  # E/S SUSPENDUES. Ajouté le 2026-08-18 : `drbd_resource_suspended` était exporté depuis le
-  # début et aucune alerte ne l'exploitait, alors que c'est le PIRE dénouement — le fil LINBIT
-  # 1169 décrit précisément un blocage total des E/S, et nous l'avons constaté sur le volume RWX
-  # (`suspended:quorum`, `blocked:upper`). 5 min pour absorber les suspensions légitimes
-  # pendant une rotation de nœuds, où le quorum se recalcule.
+  # E/S SUSPENDUES — le PIRE dénouement : le fil LINBIT 1169 décrit un blocage TOTAL des E/S,
+  # constaté en pratique sous la forme `suspended:quorum`, `blocked:upper`. 5 min pour absorber
+  # les suspensions légitimes pendant une rotation de nœuds, où le quorum se recalcule.
   esSuspenduesFor: 5m
 
   # RESOURCE ORPHELINE. 15 min : une création ou une suppression LINSTOR normale comporte une
-  # fenêtre où le fichier de configuration et l'objet noyau ne sont pas encore d'accord. Le cas
-  # réel a duré quatorze heures, donc ce délai ne coûte aucune détection.
+  # fenêtre où le fichier de configuration et l'objet noyau ne sont pas encore d'accord. Un
+  # résidu réel, lui, dure des heures : ce délai ne coûte aucune détection.
   orphelineFor: 15m
 
   # RÉPLIQUE QUI A TOUT REÇU MAIS NE PASSE JAMAIS `UpToDate` — `Inconsistent` avec un bitmap à

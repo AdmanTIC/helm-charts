@@ -12,7 +12,7 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: drbd-selfheal
-  namespace: {{ .Values.namespace }}
+  namespace: {{ include "drbd-selfheal.namespace" . }}
   labels:
     app.kubernetes.io/name: drbd-selfheal
 spec:
@@ -44,10 +44,11 @@ spec:
         spec:
           restartPolicy: Never
           serviceAccountName: drbd-selfheal
-          # Sur un worker : le balayeur n'a besoin d'aucune adhérence à un nœud storage, il
-          # joint les satellites par l'API. Aucune toleration, les autres rôles étant taintés.
-          nodeSelector:
-            {{ .Values.nodeRoleLabel }}: worker
+          {{- /* Placement facultatif : le balayeur joint les satellites par l'API, il n'a
+          donc aucune adhérence à un nœud de stockage. */}}
+          {{- with (include "drbd-selfheal.placement" . | trim) }}
+          {{- . | nindent 10 }}
+          {{- end }}
           securityContext:
             runAsNonRoot: true
             runAsUser: 65534
@@ -64,7 +65,7 @@ spec:
                     fieldRef:
                       fieldPath: metadata.namespace
                 - name: PIRAEUS_NAMESPACE
-                  value: {{ .Values.namespace | quote }}
+                  value: {{ include "drbd-selfheal.namespace" . | quote }}
                 - name: SATELLITE_SELECTOR
                   {{- /* Assemblé en `k=v,k=v` : une simple boucle concaténerait sans
                   séparateur dès qu'un second label serait ajouté aux values. */}}
@@ -114,7 +115,7 @@ spec:
                 - name: STATE_CONFIGMAP
                   value: {{ .Values.controller.stateConfigMap | quote }}
                 - name: PUSHGATEWAY_URL
-                  value: {{ if .Values.pushgateway.enabled }}{{ printf "http://drbd-selfheal-pushgateway.%s.svc:%v" .Values.namespace .Values.pushgateway.port | quote }}{{ else }}""{{ end }}
+                  value: {{ if .Values.pushgateway.enabled }}{{ printf "http://drbd-selfheal-pushgateway.%s.svc:%v" (include "drbd-selfheal.namespace" .) .Values.pushgateway.port | quote }}{{ else }}""{{ end }}
               volumeMounts:
                 - name: script
                   mountPath: /opt/drbd-selfheal

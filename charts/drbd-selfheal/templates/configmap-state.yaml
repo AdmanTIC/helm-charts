@@ -3,17 +3,18 @@ Séries de stagnation conservées entre deux exécutions du CronJob. C'est ce Co
 un CronJob capable de prouver une stagnation : une exécution isolée, qui n'échantillonne que
 60 secondes, ne le pourrait pas.
 
-🛑 `data.state.json` est écrit À L'EXÉCUTION. L'Application porte un `ignoreDifferences` sur
-ce champ ET `RespectIgnoreDifferences=true`. Sans la seconde option, `ignoreDifferences` ne
-masque l'écart qu'à la COMPARAISON : la synchronisation applique quand même le manifeste,
-donc l'état vide, et remet toutes les séries à zéro à chaque réconciliation — le balayeur
-n'atteindrait alors JAMAIS son seuil. Leçon déjà payée sur `vip-failover`, où `active_edge`
-avait été remis à vide à la première synchronisation.
+🛑 `data.state.json` EST ÉCRIT À L'EXÉCUTION : il est donc, par construction, en écart avec le
+manifeste. Sous un déploiement réconcilié en continu (Argo CD, Flux), ce champ doit être exclu
+de la SYNCHRONISATION, et pas seulement de la comparaison. Côté Argo CD, cela suppose les deux
+à la fois : un `ignoreDifferences` sur `/data/state.json` ET l'option de synchronisation
+`RespectIgnoreDifferences=true`. Sans la seconde, la synchronisation applique quand même le
+manifeste, donc l'état vide, et remet toutes les séries à zéro à chaque réconciliation — le
+balayeur n'atteindrait alors JAMAIS son seuil.
 */}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ .Values.controller.stateConfigMap }}
-  namespace: {{ .Values.namespace }}
+  namespace: {{ include "drbd-selfheal.namespace" . }}
 data:
   state.json: "{}"

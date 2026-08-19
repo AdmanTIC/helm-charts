@@ -1,14 +1,19 @@
 {{- if .Values.alertes.enabled }}
 {{- $a := .Values.alertes }}
-{{- $doc := "docs/08-exploitation/projet-drbd-resync-calee.md" }}
+{{- /* Renvoi cité par les descriptions. Vide dans les values = formulation neutre, et
+aucune annotation `runbook` posée. */}}
+{{- $doc := $a.runbook | default "le runbook d'exploitation" }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: drbd
-  namespace: {{ .Values.namespace }}
+  namespace: {{ include "drbd-selfheal.namespace" . }}
+  {{- /* 🛑 Exigé par le `ruleSelector` du Prometheus en place, comme pour les monitors :
+  sans ces labels, les règles sont créées et jamais chargées. */}}
+  {{- with .Values.collecte.prometheusLabels }}
   labels:
-    # 🛑 Exigé par le `ruleSelector` du Prometheus en place, comme pour les monitors.
-    release: {{ .Values.collecte.prometheusReleaseLabel }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   groups:
     # ─── Les deux défauts ────────────────────────────────────────────────────
@@ -55,13 +60,15 @@ spec:
               sortira pas de lui-même. Vérifier le verdict du balayeur
               (drbd_selfheal_detected) ; à défaut, renégocier la paire à la main depuis la
               cible — voir {{ $doc }}.
-            runbook: {{ $doc }}
+{{- with $a.runbook }}
+            runbook: {{ . }}
+{{- end }}
 
         {{- /*
         DÉFAUT 2 — bitmap périmé entre deux répliques UpToDate. Le cas dangereux : les deux
         côtés se croient d'accord, `linstor resource list` est ENTIÈREMENT VERT, et si le
-        troisième nœud tombe les deux restants divergent sans le savoir. Constaté le
-        2026-08-17 entre storage1 et storage3, ~50 Gio marqués divergents.
+        troisième nœud tombe les deux restants divergent sans le savoir. Constaté en pratique
+        à hauteur de plusieurs dizaines de Gio marqués divergents.
 
         🛑 LA DERNIÈRE CLAUSE EST LE CŒUR DE CETTE ALERTE, et la raison du label `node` dans
         le PodMonitor. `drbd-reactor` n'exporte PAS l'état de disque du pair : il faut aller
@@ -69,9 +76,9 @@ spec:
         renomme le `node` du pair en `conn_name` pour le confronter au `conn_name` porté par
         la vue locale. Sans ce label, cette alerte est inécrivable.
 
-        `out-of-sync` étant ASYMÉTRIQUE — storage1 annonçait 164 Mio là où storage2 annonçait
-        0 — l'alerte se déclenche depuis le seul côté qui porte le bitmap sale, ce qui est
-        aussi le côté depuis lequel il faut agir.
+        `out-of-sync` étant ASYMÉTRIQUE — un nœud annonce des Mio divergents là où son pair en
+        annonce 0 — l'alerte se déclenche depuis le seul côté qui porte le bitmap sale, ce qui
+        est aussi le côté depuis lequel il faut agir.
         */}}
         - alert: DrbdBitmapDivergentEntreUpToDate
           expr: |
@@ -97,7 +104,9 @@ spec:
               côtés affichent UpToDate et qu'aucune resynchronisation ne tourne. LINSTOR
               affiche tout vert : cette alerte est le seul signal. Si le troisième nœud tombe,
               les deux restants se croient d'accord sans l'être. Voir {{ $doc }}.
-            runbook: {{ $doc }}
+{{- with $a.runbook }}
+            runbook: {{ . }}
+{{- end }}
 
     # ─── Santé DRBD au-delà des deux défauts ─────────────────────────────────
     - name: drbd-sante
@@ -114,7 +123,9 @@ spec:
             description: >-
               La paire n'est pas Connected depuis {{ $a.connexionDegradeeFor }}. Une paire
               durablement séparée accumule un bitmap divergent, ce qui reconduit au défaut 2.
-            runbook: {{ $doc }}
+{{- with $a.runbook }}
+            runbook: {{ . }}
+{{- end }}
 
         - alert: DrbdQuorumPerdu
           expr: drbd_device_quorum == 0
@@ -128,13 +139,14 @@ spec:
               Le volume a perdu son quorum : les écritures y sont suspendues ou en erreur. Le
               balayeur refusera d'agir sur cette resource tant que le quorum n'est pas rétabli
               (garde-fou `quorum_local_perdu`).
-            runbook: {{ $doc }}
+{{- with $a.runbook }}
+            runbook: {{ . }}
+{{- end }}
 
         {{- /*
-        Ajoutée le 2026-08-18. `drbd_resource_suspended` était exporté depuis le début sans
-        qu'aucune alerte ne l'exploite — alors que c'est le PIRE dénouement possible : le fil
-        LINBIT 1169 décrit un blocage TOTAL des E/S, et nous l'avons constaté sur le volume RWX
-        (`suspended:quorum`, `blocked:upper`) sans qu'aucun dispositif ne le signale.
+        `drbd_resource_suspended` est le PIRE dénouement possible : le fil LINBIT 1169 décrit
+        un blocage TOTAL des E/S, constaté en pratique sous la forme `suspended:quorum`,
+        `blocked:upper` — sans qu'aucun dispositif standard ne le signale.
 
         ⚠️ Le champ `blocked` de la sortie texte de `drbdsetup` n'existe PAS dans son JSON — le
         balayeur ne peut donc pas le voir. Cette alerte est la seule voie vers cette
@@ -149,15 +161,17 @@ spec:
             summary: >-
               E/S DRBD suspendues : {{ "{{ $labels.name }}" }} sur {{ "{{ $labels.node }}" }}
             description: >-
-              Le volume a suspendu ses entrées-sorties — `on-no-quorum: suspend-io` et
-              `on-no-data-accessible: suspend-io` sont tous deux actifs sur ce cluster. Toute
-              écriture applicative est GELÉE, et un montage NFS servi depuis ce volume se figera
-              à son tour, ce qui bloque ensuite le démontage côté client. Chaîne complète et
+              Le volume a suspendu ses entrées-sorties — signature des politiques
+              `on-no-quorum: suspend-io` et `on-no-data-accessible: suspend-io`. Toute écriture
+              applicative est GELÉE, et un partage réseau servi depuis ce volume se figera à son
+              tour, ce qui bloque ensuite le démontage côté client. Chaîne complète et
               déblocage : {{ $doc }}.
-            runbook: {{ $doc }}
+{{- with $a.runbook }}
+            runbook: {{ . }}
+{{- end }}
 
         {{- /*
-        Ajoutée le 2026-08-18, d'après l'analyse de `kvaps` sur `LINBIT/drbd#40` : une réplique
+        D'après l'analyse de `kvaps` sur `LINBIT/drbd#40` : une réplique
         peut avoir TOUT reçu — `out-of-sync` vidé à zéro — et rester `Inconsistent`
         indéfiniment, la resynchronisation étant suspendue derrière une dépendance de connexion
         dont la libération échoue.
@@ -169,7 +183,7 @@ spec:
         consommerait les plafonds de fréquence sans rien corriger.
 
         Ce verrou est réputé corrigé en 9.2.15 et convergent sur 9.3.2 ; l'alerte existe pour le
-        cas où il se manifesterait malgré tout sur la 9.3.3 en place.
+        cas où il se manifesterait malgré tout sur la version en place.
         */}}
         - alert: DrbdRepliqueInconsistanteSansDivergence
           expr: |
@@ -193,7 +207,9 @@ spec:
               réplique utilisable en moins, alors que LINSTOR l'affiche en cours de
               synchronisation. AUCUN déblocage manuel ne fonctionne sur ce verrou : voir
               {{ $doc }} avant de tenter quoi que ce soit.
-            runbook: {{ $doc }}
+{{- with $a.runbook }}
+            runbook: {{ . }}
+{{- end }}
 
     # ─── La collecte elle-même ───────────────────────────────────────────────
     #
@@ -202,17 +218,16 @@ spec:
     # Tout le dispositif deviendrait décoratif sans que personne ne le sache.
     - name: drbd-collecte
       rules:
-        {{- /* Panne totale. Vérifié le 2026-08-17 : cette expression rend bien une série
-        tant qu'aucune collecte n'existe — c'était l'état du cluster avant ce chart. */}}
+        {{- /* Panne totale. `absent()` rend bien une série tant qu'aucune collecte n'existe —
+        soit l'état de tout cluster avant l'installation de ce chart. */}}
         {{- /* Une resource que le NOYAU porte encore alors que LINSTOR a oublié sa
         configuration. Plus personne ne la réconcilie : elle reste `StandAlone`, sans quorum,
         E/S suspendues, indéfiniment.
 
-        Le 2026-08-18, ce cas a duré quatorze heures sur `worker3`. Trois alertes se
-        déclenchaient — `DrbdConnexionNonEtablie`, `DrbdQuorumPerdu`, `DrbdResourceSuspendue` —
-        mais toutes sur les SYMPTÔMES : aucune ne disait que la resource n'appartenait à
-        personne, et le diagnostic a demandé de comparer à la main l'inventaire LINSTOR avec ce
-        que portait chaque noyau. Cette alerte le nomme directement.
+        Un tel résidu tient des heures sans être nommé : trois alertes se déclenchent —
+        `DrbdConnexionNonEtablie`, `DrbdQuorumPerdu`, `DrbdResourceSuspendue` — mais toutes sur
+        les SYMPTÔMES, et le diagnostic demande alors de comparer à la main l'inventaire LINSTOR
+        avec ce que porte chaque noyau. Cette alerte le nomme directement.
 
         ⚠️ Le retrait passe par `drbdsetup down`, PAS `drbdadm` : ce dernier lit
         `/var/lib/linstor.d` et refuse ce qu'il n'y trouve plus — `not defined in your config
@@ -236,7 +251,9 @@ spec:
               `drbdsetup down {{ "{{ $labels.resource }}" }}` sur le satellite du nœud. Le balayeur ne le fait pas
               de lui-même : sur une resource réellement utilisée, ce retrait couperait un volume
               vivant. Détail dans {{ $doc }}.
-            runbook: {{ $doc }}
+{{- with $a.runbook }}
+            runbook: {{ . }}
+{{- end }}
 
         - alert: DrbdCollecteAbsente
           expr: absent(drbdreactor_up)
@@ -248,17 +265,19 @@ spec:
             description: >-
               Plus aucun `drbd-reactor` n'est scruté : les alertes DRBD sont toutes aveugles,
               y compris celles qui couvrent la divergence silencieuse entre répliques
-              UpToDate. Vérifier le PodMonitor `drbd-satellites` et son label
-              `release={{ .Values.collecte.prometheusReleaseLabel }}`, sans lequel Prometheus
-              l'ignore SANS erreur.
-            runbook: {{ $doc }}
+              UpToDate. Vérifier le PodMonitor `drbd-satellites` et les labels attendus par le
+              `podMonitorSelector` du Prometheus en place (`collecte.prometheusLabels`), sans
+              lesquels il l'ignore SANS erreur.
+{{- with $a.runbook }}
+            runbook: {{ . }}
+{{- end }}
 
         {{- /* Panne partielle : on compare aux satellites que kube-state-metrics déclare
         prêts, plutôt qu'à un nombre de nœuds figé dans le chart. */}}
         - alert: DrbdCollecteIncomplete
           expr: |
             count(drbdreactor_up)
-              < count(kube_pod_container_status_ready{namespace="{{ .Values.namespace }}", container="drbd-reactor"} == 1)
+              < count(kube_pod_container_status_ready{namespace="{{ include "drbd-selfheal.namespace" . }}", container="drbd-reactor"} == 1)
           for: 15m
           labels:
             severity: warning
@@ -268,7 +287,9 @@ spec:
               {{ "{{ $value }}" }} satellite(s) manquent à la collecte. `out-of-sync` étant
               asymétrique, il se lit depuis LES DEUX extrémités : un nœud non scruté peut
               porter un bitmap sale que personne ne voit.
-            runbook: {{ $doc }}
+{{- with $a.runbook }}
+            runbook: {{ . }}
+{{- end }}
 
     # ─── Le balayeur ─────────────────────────────────────────────────────────
     - name: drbd-selfheal
@@ -292,9 +313,11 @@ spec:
             description: >-
               Tous les critères ET tous les garde-fous sont réunis, mais le balayeur est en
               MODE OBSERVATION : il n'a rien fait. Confronter ce verdict aux journaux du job
-              (`kubectl -n {{ .Values.namespace }} logs job/...`), puis décider de l'armer —
+              (`kubectl -n {{ include "drbd-selfheal.namespace" . }} logs job/...`), puis décider de l'armer —
               voir {{ $doc }}.
-            runbook: {{ $doc }}
+{{- with $a.runbook }}
+            runbook: {{ . }}
+{{- end }}
 
         - alert: DrbdSelfHealActionRefusee
           expr: |
@@ -311,7 +334,9 @@ spec:
               Un défaut est établi mais le balayeur refuse d'agir, motif
               « {{ "{{ $labels.reason }}" }} ». Le défaut PERSISTE et relève désormais de
               l'humain : le déblocage manuel est décrit dans {{ $doc }}.
-            runbook: {{ $doc }}
+{{- with $a.runbook }}
+            runbook: {{ . }}
+{{- end }}
 
         {{- /* L'auto-guérison ne doit jamais masquer le défaut : chaque intervention reste
         visible. C'est la contrepartie explicite de la décision « alerte ET auto-guérison ». */}}
@@ -325,9 +350,11 @@ spec:
               sur {{ "{{ $labels.node }}" }} ({{ "{{ $labels.defect }}" }})
             description: >-
               Une paire a été coupée et reconnectée pour débloquer
-              {{ "{{ $labels.defect }}" }}. Le défaut de DRBD 9.3.3 s'est donc reproduit : la
-              corriger à la source suppose une montée de version, cf. {{ $doc }}.
-            runbook: {{ $doc }}
+              {{ "{{ $labels.defect }}" }}. Le défaut DRBD s'est donc reproduit : le corriger à
+              la source suppose une montée de version, cf. {{ $doc }}.
+{{- with $a.runbook }}
+            runbook: {{ . }}
+{{- end }}
 
         {{- /* 🛑 LA PLUS GRAVE DE TOUTES. Le balayeur a lancé une vérification en ligne avant
         de purger un bitmap, et le noyau a répondu que les blocs divergent RÉELLEMENT. Deux
@@ -336,11 +363,11 @@ spec:
         vérification préalable existe — une renégociation aurait purgé le bitmap sans
         transférer un octet, effaçant la divergence au lieu de la réparer.
 
-        Établi sur le cluster le 2026-08-18, sur `keep/keep-pvc` : 6 blocs de 4 KiB divergents
-        entre deux pairs au MÊME UUID courant. DRBD les a resynchronisés de lui-même après la
-        vérification, et une seconde vérification a confirmé 0 bloc — la vérification RÉPARE.
-        Cette alerte reste néanmoins critique : la réparation n'est pas garantie, et une
-        divergence silencieuse mérite un regard humain à chaque fois. */}}
+        Établi en pratique : quelques blocs de 4 KiB divergents entre deux pairs au MÊME UUID
+        courant. DRBD les a resynchronisés de lui-même après la vérification, et une seconde
+        vérification a confirmé 0 bloc — la vérification RÉPARE. Cette alerte reste néanmoins
+        critique : la réparation n'est pas garantie, et une divergence silencieuse mérite un
+        regard humain à chaque fois. */}}
         - alert: DrbdSelfHealDivergenceReelle
           expr: |
             drbd_selfheal_divergence_reelle == 1
@@ -360,7 +387,9 @@ spec:
               pour confirmer. Si la divergence persiste, la réplique fautive s'identifie en
               vérifiant chaque pair contre un TROISIÈME : celle qui diffère des deux autres est
               la mauvaise. Procédure dans {{ $doc }}.
-            runbook: {{ $doc }}
+{{- with $a.runbook }}
+            runbook: {{ . }}
+{{- end }}
 
         - alert: DrbdSelfHealActionEnEchec
           expr: increase(drbd_selfheal_action_failures_total[15m]) > 0
@@ -373,7 +402,9 @@ spec:
             description: >-
               Le `drbdadm` a échoué : le défaut n'est pas corrigé et l'auto-guérison ne
               rattrapera pas le coup toute seule. Journaux du job, puis déblocage manuel.
-            runbook: {{ $doc }}
+{{- with $a.runbook }}
+            runbook: {{ . }}
+{{- end }}
 
         {{- /* Le balayeur muet est le pire des cas : plus de détection ET plus d'action, sans
         rien qui le signale. `absent()` couvre le Pushgateway vide, la soustraction couvre le
@@ -392,7 +423,9 @@ spec:
               cycles manqués. Les deux défauts ne sont plus détectés que par les alertes de
               secours, qui ne voient ni l'état de réplication ni celui du pair. Vérifier le
               CronJob `drbd-selfheal` et son Pushgateway.
-            runbook: {{ $doc }}
+{{- with $a.runbook }}
+            runbook: {{ . }}
+{{- end }}
 
         - alert: DrbdBalayeurRelevesImpossibles
           expr: increase(drbd_selfheal_exec_errors_total[30m]) > 3
@@ -404,5 +437,7 @@ spec:
               Plus de 3 relevés impossibles en 30 min. Un satellite non lu est un satellite
               dont le bitmap n'est pas vérifié. Causes probables : droit `pods/exec` retiré,
               satellite non Ready, ou `drbdsetup` en échec dans le conteneur.
-            runbook: {{ $doc }}
+{{- with $a.runbook }}
+            runbook: {{ . }}
+{{- end }}
 {{- end }}

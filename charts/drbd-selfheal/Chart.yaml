@@ -1,9 +1,10 @@
 apiVersion: v2
 name: drbd-selfheal
 description: >-
-  Détection et auto-guérison des resynchronisations DRBD calées et des bitmaps périmés :
-  collecte des métriques drbd-reactor (PodMonitor), règles d'alerte, et balayeur CronJob
-  qui renégocie la paire fautive. Livré en MODE OBSERVATION — il détecte, journalise et
-  alerte sans agir.
+  Détection et auto-guérison des resynchronisations DRBD calées et des bitmaps périmés sur
+  un stockage LINSTOR/Piraeus : collecte des métriques drbd-reactor (PodMonitor), règles
+  d'alerte, tableau de bord, et balayeur CronJob qui renégocie la paire fautive. Livré en
+  MODE OBSERVATION — il détecte, journalise et alerte sans agir tant que
+  `controller.dryRun` vaut true.
 type: application
-version: 0.1.0
+version: 0.2.0

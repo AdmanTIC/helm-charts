@@ -3,8 +3,8 @@
 
 🛑 CETTE LECTURE DÉCIDE SI LE BALAYEUR A LE DROIT DE PURGER UN BITMAP. Se tromper de sens sur
 une seule de ces chaînes, c'est soit détruire une divergence réelle, soit ne plus jamais
-débloquer un bitmap fantôme. Les chaînes ci-dessous sont RELEVÉES sur le cluster le
-2026-08-18, sur DRBD 9.3.3 — elles ne sont pas inventées.
+débloquer un bitmap fantôme. Les chaînes ci-dessous sont RELEVÉES sur un cluster réel, sur
+DRBD 9.3.3 — elles ne sont pas inventées.
 
 Exécution : `python3 charts/drbd-selfheal/files/test-verdict-verification.py`
 Aucune dépendance, aucun accès réseau : les échanges avec le noyau sont simulés.
@@ -205,7 +205,7 @@ def principal():
 
     # 🛑 Les deux SENS d'une même connexion doivent partager UNE sonde. Sans cela le second
     # sens relance un `drbdadm verify` sur une connexion deja en verification, que DRBD refuse
-    # avec le code 11. Defaut constate a l'essai le 2026-08-18.
+    # avec le code 11. Defaut constate a l'essai.
     aller = balayeur.cle_sonde(("storage1", RES, "0", "storage3"))
     retour = balayeur.cle_sonde(("storage3", RES, "0", "storage1"))
     if aller == retour:

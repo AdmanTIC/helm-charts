@@ -2,26 +2,30 @@
 {{- /*
 Tableau de bord Grafana, chargé par le sidecar `grafana-sc-dashboard` de kube-prometheus-stack.
 
-Relevé sur le cluster : le sidecar tourne en `METHOD=WATCH`, `NAMESPACE=ALL`, et retient les
-ConfigMaps portant `grafana_dashboard: "1"`. Ce ConfigMap peut donc rester ici, avec le reste du
-chart, sans rien déposer dans le namespace `monitoring`.
+Le sidecar retient les ConfigMaps portant son label — `grafana_dashboard: "1"` par défaut. Ce
+ConfigMap peut donc rester ici, avec le reste du chart.
 
-⚠️ `FOLDER_ANNOTATION` n'est PAS configuré sur ce sidecar : l'annotation `grafana_folder` serait
-ignorée. Le tableau de bord atterrit dans le dossier par défaut, comme ceux du chart amont — d'où
-un titre explicite plutôt qu'un classement.
+⚠️ ENCORE FAUT-IL QUE LE SIDECAR REGARDE CE NAMESPACE : il ne le fait que s'il tourne avec
+`NAMESPACE=ALL`. Restreint au namespace de Grafana, il ne verra jamais ce ConfigMap — mettre
+alors `dashboard.enabled: false` et déposer le tableau de bord autrement.
+
+⚠️ L'annotation `grafana_folder` n'est honorée que si le sidecar est configuré avec
+`FOLDER_ANNOTATION` ; elle n'est donc pas posée ici, et le tableau de bord atterrit dans le
+dossier par défaut — d'où un titre explicite plutôt qu'un classement.
 
 ⚠️ `.Files.Get` rend le fichier BRUT : Helm ne réinterprète pas son contenu. C'est ce qui permet
 aux `legendFormat` d'utiliser la syntaxe `{{"{{"}}node{{"}}"}}` de Grafana sans que le moteur de
-gabarits s'en saisisse. Ne jamais passer ce contenu à `tpl`.
+gabarits s'en saisisse. Ne jamais passer ce contenu à `tpl` — d'où le `replace` ci-dessous, qui
+substitue le seul jeton dépendant du déploiement sans rien réinterpréter.
 */}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: drbd-selfheal-dashboard
-  namespace: {{ .Values.namespace }}
+  namespace: {{ include "drbd-selfheal.namespace" . }}
   labels:
     {{ .Values.dashboard.sidecarLabel }}: {{ .Values.dashboard.sidecarLabelValue | quote }}
 data:
   drbd-replication.json: |
-{{ .Files.Get "files/dashboard.json" | indent 4 }}
+{{ .Files.Get "files/dashboard.json" | replace "__NAMESPACE__" (include "drbd-selfheal.namespace" .) | indent 4 }}
 {{- end }}

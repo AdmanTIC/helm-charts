@@ -3,7 +3,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: drbd-selfheal-script
-  namespace: {{ .Values.namespace }}
+  namespace: {{ include "drbd-selfheal.namespace" . }}
 data:
   drbd-selfheal.py: |
 {{ .Files.Get "files/drbd-selfheal.py" | indent 4 }}

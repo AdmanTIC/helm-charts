@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Balayeur des resynchronisations DRBD calées et des bitmaps périmés.
 
-Deux défauts de DRBD 9.3.3, établis les 2026-08-16 et 2026-08-17 (voir
-`docs/08-exploitation/projet-drbd-resync-calee.md` du dépôt IaC) :
+Deux défauts établis sur DRBD 9.3.3 :
 
   1. RESYNCHRONISATION CALÉE — le battement de rôle d'un client diskless invalide la
      resynchronisation en cours ; une fois le battement fini, elle ne repart JAMAIS.
@@ -16,20 +15,19 @@ Déblocage, dans les deux cas : forcer la renégociation de la paire depuis la C
 qui porte le bitmap sale), par `drbdadm disconnect` puis `connect`. À la reconnexion DRBD
 compare les UUID courants et, s'ils concordent, purge le bitmap sans transférer un octet.
 
-POURQUOI `exec` DANS LES SATELLITES, ET NON PROMETHEUS. Vérifié sur le cluster le
-2026-08-17 : `drbd-reactor` 1.12.0 exporte 28 métriques, dont AUCUNE ne porte l'état de
-RÉPLICATION ni l'état de disque du PAIR. `SyncTarget` est donc invisible depuis Prometheus.
+POURQUOI `exec` DANS LES SATELLITES, ET NON PROMETHEUS. Relevé sur `drbd-reactor` 1.12.0 :
+28 métriques exportées, dont AUCUNE ne porte l'état de RÉPLICATION ni l'état de disque du
+PAIR. `SyncTarget` est donc invisible depuis Prometheus.
 L'API REST de LINSTOR ne donne, par connexion, que `{connected, message}`, et ses propres
 métriques ne valent pas mieux. Seul `drbdsetup status --json` porte `replication-state`,
 `peer-disk-state`, `resync-suspended` et `has-online-verify-details` — ce dernier permettant
 d'écarter un `drbdadm verify` légitime, qui salit le bitmap entre deux pairs UpToDate sans
 qu'il y ait le moindre défaut.
 
-POURQUOI LA BIBLIOTHÈQUE STANDARD SEULE, comme `vip-failover` : l'API `exec` de Kubernetes
-réclame une bascule WebSocket, absente d'`urllib`. Elle tient en une centaine de lignes de
-`socket` + `ssl` (classe `Kube`), ce qui évite d'ajouter au dépôt une image porteuse de
-`kubectl` ou une installation de paquets à chaque exécution — le job tourne 288 fois par
-jour.
+POURQUOI LA BIBLIOTHÈQUE STANDARD SEULE : l'API `exec` de Kubernetes réclame une bascule
+WebSocket, absente d'`urllib`. Elle tient en une centaine de lignes de `socket` + `ssl`
+(classe `Kube`), ce qui évite d'exiger une image porteuse de `kubectl` ou une installation de
+paquets à chaque exécution — le job tourne 288 fois par jour.
 
 FORME. CronJob de balayage, et non démon : chaque exécution échantillonne pendant
 SAMPLE_WINDOW secondes (plusieurs relevés), puis compare son verdict à celui de l'exécution
@@ -239,8 +237,8 @@ class Kube:
             # bascule WebSocket est un `GET`, or Kubernetes dérive le verbe RBAC de la méthode
             # HTTP sur les sous-ressources `connect`. Un Role n'accordant que `create` sur
             # `pods/exec` — le verbe conventionnel, celui de kubectl, qui passe par POST —
-            # refuse donc ce `GET`. Constaté au premier déploiement réel, le 2026-08-18, sur
-            # les 12 nœuds à la fois.
+            # refuse donc ce `GET`. Constaté au premier déploiement réel, sur tous les nœuds
+            # à la fois.
             if " 403 " in status:
                 raise RuntimeError(
                     f"bascule WebSocket refusée : {status} — il manque très probablement le "
@@ -655,8 +653,8 @@ def verdict_verification(kube, pod, resource, peer, depuis):
     après l'horodatage `depuis`. None signifie « pas encore conclu ».
 
     🛑 LE NOYAU N'ÉCRIT « Online verify found N 4k blocks out of sync! » QUE LORSQU'IL EN A
-    TROUVÉ. Une vérification propre ne rend qu'« Online verify done ». Relevé sur DRBD 9.3.3
-    le 2026-08-18, sur les deux cas :
+    TROUVÉ. Une vérification propre ne rend qu'« Online verify done ». Relevé sur DRBD 9.3.3,
+    sur les deux cas :
 
         Online verify done (total 241 sec; paused 0 sec; 43516 K/sec)
         Online verify done (total 243 sec; paused 0 sec; 43156 K/sec)
@@ -687,10 +685,10 @@ def cle_sonde(key):
     """Clé de sonde : une vérification en ligne porte sur une CONNEXION, pas sur un sens.
 
     🛑 SANS CETTE NORMALISATION, LA SONDE SE LANCE DEUX FOIS ET LA SECONDE ÉCHOUE. Un bitmap
-    périmé est vu des DEUX côtés : `(storage1, peer=storage3)` et `(storage3, peer=storage1)`
-    sont deux clés de paire distinctes qui rendent le même verdict. La seconde relançait
-    `drbdadm verify` sur une connexion déjà en cours de vérification, que DRBD refuse avec le
-    code 11. Constaté à l'essai le 2026-08-18. En triant les deux nœuds, les deux sens
+    périmé est vu des DEUX côtés : `(nodeA, peer=nodeB)` et `(nodeB, peer=nodeA)` sont deux
+    clés de paire distinctes qui rendent le même verdict. La seconde relançait `drbdadm verify`
+    sur une connexion déjà en cours de vérification, que DRBD refuse avec le code 11. Constaté
+    à l'essai. En triant les deux nœuds, les deux sens
     partagent une seule sonde : le premier lance, le second constate.
     """
     node, resource, volume, peer = key
@@ -706,15 +704,15 @@ CONFIGS_LINSTOR = "/var/lib/linstor.d"
 def relever_orphelines(kube, pods, resources):
     """Rend les resources portées par le noyau dont LINSTOR a oublié la configuration.
 
-    🛑 CE CAS EST ARRIVÉ, ET IL A PRODUIT UNE PANNE D'ATTACHEMENT LATENTE. Le 2026-08-18,
-    la suppression d'une ligne interne de la base LINSTOR a laissé sur `worker3` une resource
-    DRBD encore présente dans le NOYAU, mais dont LINSTOR ne savait plus rien. Plus personne ne
-    la réconciliait : `StandAlone` vers ses trois pairs, sans quorum, E/S suspendues, pendant
-    quatorze heures. Rien ne la nommait — trois alertes se déclenchaient sur ses SYMPTÔMES,
-    aucune ne disait « cette resource n'appartient à personne ».
+    🛑 CE CAS ARRIVE, ET IL PRODUIT UNE PANNE D'ATTACHEMENT LATENTE. Constaté : la suppression
+    d'une ligne interne de la base LINSTOR laisse sur un nœud une resource DRBD encore présente
+    dans le NOYAU, mais dont LINSTOR ne sait plus rien. Plus personne ne la réconcilie :
+    `StandAlone` vers ses pairs, sans quorum, E/S suspendues, pendant des heures. Rien ne la
+    nomme — les alertes de santé se déclenchent sur ses SYMPTÔMES, aucune ne dit « cette
+    resource n'appartient à personne ».
 
-    L'enjeu dépasse le bruit : si un pod avait été planifié sur ce nœud, le CSI y aurait demandé
-    la création d'une resource du même nom, et ce fantôme s'y serait opposé.
+    L'enjeu dépasse le bruit : si un pod est planifié sur ce nœud, le CSI y demande la création
+    d'une resource du même nom, et ce fantôme s'y oppose.
 
     ⚠️ Le signal est la DISPARITION DU FICHIER DE CONFIGURATION, et c'est le bon : c'est
     exactement ce que `drbdadm` lit, d'où son refus `not defined in your config (for this
@@ -777,7 +775,7 @@ def lancer_verification(kube, pod, state, key, now):
 
     🛑 L'ORDRE EST CELUI-LÀ, ET C'EST UN RÉSULTAT DE MESURE, PAS UNE PRÉFÉRENCE DE STYLE.
 
-    Vérifier AVANT de purger ne prouve rien. Éprouvé le 2026-08-18 sur un volume d'essai : une
+    Vérifier AVANT de purger ne prouve rien. Éprouvé sur un volume d'essai : une
     vérification lancée sur un bitmap DÉJÀ sale ré-annonce les bits posés. Deux vérifications
     successives ont rendu « Online verify found 16 4k blocks out of sync! » alors que les
     empreintes md5 des deux répliques étaient IDENTIQUES sur la région visée — la divergence
@@ -863,7 +861,7 @@ def relever_verifications(kube, pods, state, now):
         # 🛑 Seul le nœud qui a lancé peut interpréter son propre repère : `depuis` est un
         # horodatage NOYAU, en secondes depuis le démarrage DE CE NŒUD. Lu ailleurs, il ne veut
         # rien dire — les deux extrémités d'une connexion n'ont pas démarré ensemble. Défaut
-        # constaté à l'essai le 2026-08-18 : une vieille ligne du journal du pair portait un
+        # constaté à l'essai : une vieille ligne du journal du pair portait un
         # horodatage supérieur au repère, et passait pour neuve.
         pod = next((p for p, n in pods if n == node), None)
         if pod is None:

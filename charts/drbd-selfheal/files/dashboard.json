@@ -194,7 +194,7 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "${ds}" },
-          "expr": "(count(kube_pod_container_status_ready{namespace=\"piraeus-datastore\", container=\"drbd-reactor\"} == 1) or vector(0)) - (count(drbdreactor_up) or vector(0))",
+          "expr": "(count(kube_pod_container_status_ready{namespace=\"__NAMESPACE__\", container=\"drbd-reactor\"} == 1) or vector(0)) - (count(drbdreactor_up) or vector(0))",
           "instant": true
         }
       ],
