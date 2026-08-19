@@ -1,0 +1,112 @@
+{{- if .Values.pushgateway.enabled }}
+{{- /*
+Puits de métriques du balayeur. Un CronJob est éphémère, donc non scrutable : ses verdicts
+doivent être POUSSÉS quelque part qui survive entre deux exécutions.
+
+La sémantique du Pushgateway convient exactement : le groupe est REMPLACÉ à chaque `PUT`,
+donc une paire rétablie disparaît d'elle-même des métriques, et le dernier groupe poussé
+persiste pendant les 5 minutes où aucun job ne tourne — sans quoi les alertes battraient.
+
+⚠️ Le risque connu du Pushgateway est le contraire : une métrique PÉRIMÉE qui survit à la
+mort du producteur. Il est couvert par `drbd_selfheal_last_run_timestamp_seconds`, que
+l'alerte `DrbdBalayeurMuet` surveille, et par la garde de fraîcheur portée par les alertes
+qui exploitent ces métriques.
+
+Mono-réplique et `Recreate` : deux instances ne partageraient pas leur état en mémoire, et
+Prometheus scruterait l'une ou l'autre au hasard.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: drbd-selfheal-pushgateway
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: drbd-selfheal-pushgateway
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: drbd-selfheal-pushgateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: drbd-selfheal-pushgateway
+    spec:
+      # Sur un worker : aucune toleration, les autres rôles étant taintés. Le puits n'a
+      # aucune raison de tourner sur un nœud storage.
+      nodeSelector:
+        {{ .Values.nodeRoleLabel | default "ffvolley.org/role" }}: worker
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pushgateway
+          image: {{ .Values.pushgateway.image | quote }}
+          args:
+            - --web.listen-address=:{{ .Values.pushgateway.port }}
+            # Rien à persister : les compteurs cumulés du balayeur vivent dans son ConfigMap
+            # d'état, et lui sont republiés à chaque exécution. Un redémarrage du puits ne
+            # perd donc au pire qu'un cycle de 5 minutes.
+            - --persistence.file=
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.pushgateway.port }}
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: metrics
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: metrics
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 96Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: drbd-selfheal-pushgateway
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: drbd-selfheal-pushgateway
+spec:
+  selector:
+    app.kubernetes.io/name: drbd-selfheal-pushgateway
+  ports:
+    - name: metrics
+      port: {{ .Values.pushgateway.port }}
+      targetPort: metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: drbd-selfheal-pushgateway
+  namespace: {{ .Values.namespace }}
+  labels:
+    release: {{ .Values.collecte.prometheusReleaseLabel }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: drbd-selfheal-pushgateway
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.collecte.interval }}
+      # 🛑 `honorLabels: true` EST OBLIGATOIRE DEVANT UN PUSHGATEWAY. Sans lui, Prometheus
+      # écrase le label `job` porté par la métrique poussée et relègue l'original en
+      # `exported_job` : les alertes du balayeur ne retrouveraient plus leurs séries.
+      honorLabels: true
+{{- end }}

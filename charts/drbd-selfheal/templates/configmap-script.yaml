@@ -1,0 +1,9 @@
+{{- /* Script porté par un ConfigMap distinct : il change à un autre rythme que la config. */}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: drbd-selfheal-script
+  namespace: {{ .Values.namespace }}
+data:
+  drbd-selfheal.py: |
+{{ .Files.Get "files/drbd-selfheal.py" | indent 4 }}

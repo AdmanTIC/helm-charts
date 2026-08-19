@@ -1,0 +1,36 @@
+{{- /*
+Branchement de la collecte sur un endpoint qui EXISTE DÉJÀ : `drbd-reactor` tourne dans
+chaque pod satellite, plugin prometheus actif, port nommé `prometheus`. Il n'y avait
+simplement aucun collecteur au 2026-08-17 — ni Service, ni ServiceMonitor, ni PodMonitor.
+
+Un PodMonitor suffit, le port étant nommé : pas de Service à créer.
+*/}}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: drbd-satellites
+  namespace: {{ .Values.namespace }}
+  labels:
+    # 🛑 Sans ce label, le `podMonitorSelector` du Prometheus en place ne retient pas
+    # l'objet : il est créé, accepté, et IGNORÉ, sans erreur nulle part.
+    release: {{ .Values.collecte.prometheusReleaseLabel }}
+spec:
+  selector:
+    matchLabels:
+{{ toYaml .Values.collecte.satelliteSelector | indent 6 }}
+  podMetricsEndpoints:
+    - port: {{ .Values.collecte.portName }}
+      interval: {{ .Values.collecte.interval }}
+      relabelings:
+        # 🛑 INDISPENSABLE, ET PAS COSMÉTIQUE. Les métriques de `drbd-reactor` portent le PAIR
+        # (`conn_name`) mais JAMAIS le nœud local : rien ne dit d'où la mesure est prise. Or
+        # `out-of-sync` est asymétrique — le 2026-08-17, storage1 annonçait 164 Mio divergents
+        # avec storage2 quand storage2 en annonçait 0.
+        #
+        # Ce label est aussi ce qui rend possible l'alerte « bitmap divergent entre deux pairs
+        # UpToDate » : `drbd-reactor` n'exporte pas l'état de disque du PAIR, il faut donc
+        # joindre la vue d'un nœud à celle de l'autre, `conn_name` d'un côté contre `node` de
+        # l'autre. Sans ce label, cette alerte est inécrivable.
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+          action: replace

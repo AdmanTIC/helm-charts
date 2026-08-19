@@ -1,0 +1,137 @@
+{{- /*
+Balayeur. CronJob et non démon : chaque exécution échantillonne pendant `sampleWindowSeconds`
+puis compare son verdict à celui de l'exécution précédente, conservé dans le ConfigMap
+d'état. La preuve de stagnation se construit SUR PLUSIEURS EXÉCUTIONS.
+
+L'invariant qui rend les 4 minutes aveugles entre deux jobs inoffensives : on compare la
+valeur ABSOLUE de `received` (défaut 1) ou d'`out-of-sync` (défaut 2), pas un débit. Identique
+à deux exécutions d'écart, elle prouve qu'aucune reconnexion n'a eu lieu dans l'intervalle —
+une reconnexion remettrait ces compteurs à zéro ou purgerait le bitmap.
+*/}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: drbd-selfheal
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: drbd-selfheal
+spec:
+  schedule: {{ .Values.controller.schedule | quote }}
+  # 🛑 Deux balayeurs concurrents pourraient agir deux fois sur la même paire — et le second
+  # jugerait sur un état que le premier est en train de changer.
+  concurrencyPolicy: {{ .Values.controller.concurrencyPolicy }}
+  # Au-delà de 2 min de retard au démarrage, le cycle est abandonné plutôt que rattrapé : un
+  # verdict tardif porterait sur un état périmé.
+  startingDeadlineSeconds: 120
+  # ⚠️ En mode observation, ce sont les jobs RÉUSSIS qu'on vient lire : eux seuls portent les
+  # lignes `VERDICT …`. D'où un historique de succès plus profond que celui des échecs, qui
+  # n'apprennent que la panne. Voir les commentaires des values.
+  successfulJobsHistoryLimit: {{ .Values.controller.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.controller.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      # 🛑 Aucun réessai. Un balayage dégradé ne doit ni agir ni casser une série en cours ; le
+      # pire qu'il puisse faire est de RETARDER une action d'un cycle.
+      backoffLimit: {{ .Values.controller.backoffLimit }}
+      activeDeadlineSeconds: {{ .Values.controller.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: drbd-selfheal
+          annotations:
+            # Relance le prochain cycle sur un script à jour sans attendre d'action manuelle.
+            checksum/script: {{ include (print $.Template.BasePath "/configmap-script.yaml") . | sha256sum }}
+        spec:
+          restartPolicy: Never
+          serviceAccountName: drbd-selfheal
+          # Sur un worker : le balayeur n'a besoin d'aucune adhérence à un nœud storage, il
+          # joint les satellites par l'API. Aucune toleration, les autres rôles étant taintés.
+          nodeSelector:
+            {{ .Values.nodeRoleLabel }}: worker
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: balayeur
+              image: {{ .Values.controller.image | quote }}
+              command: ["python3", "-u", "/opt/drbd-selfheal/drbd-selfheal.py"]
+              env:
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                - name: PIRAEUS_NAMESPACE
+                  value: {{ .Values.namespace | quote }}
+                - name: SATELLITE_SELECTOR
+                  {{- /* Assemblé en `k=v,k=v` : une simple boucle concaténerait sans
+                  séparateur dès qu'un second label serait ajouté aux values. */}}
+                  {{- $paires := list }}
+                  {{- range $k, $v := .Values.collecte.satelliteSelector }}
+                    {{- $paires = append $paires (printf "%s=%s" $k $v) }}
+                  {{- end }}
+                  value: {{ join "," $paires | quote }}
+                - name: DRY_RUN
+                  value: {{ .Values.controller.dryRun | quote }}
+                - name: SAMPLE_WINDOW_SECONDS
+                  value: {{ .Values.controller.sampleWindowSeconds | quote }}
+                - name: SAMPLE_COUNT
+                  value: {{ .Values.controller.sampleCount | quote }}
+                - name: JOB_BUDGET_SECONDS
+                  value: {{ .Values.controller.budgetSeconds | quote }}
+                - name: EXEC_TIMEOUT_SECONDS
+                  value: {{ .Values.controller.execTimeoutSeconds | quote }}
+                - name: STALLED_MIN_STREAK
+                  value: {{ .Values.controller.seuils.stalledMinStreak | quote }}
+                - name: STALLED_MIN_PROVEN_SECONDS
+                  value: {{ .Values.controller.seuils.stalledMinProvenSeconds | quote }}
+                - name: STALE_BITMAP_MIN_STREAK
+                  value: {{ .Values.controller.seuils.staleBitmapMinStreak | quote }}
+                - name: STALE_BITMAP_MIN_PROVEN_SECONDS
+                  value: {{ .Values.controller.seuils.staleBitmapMinProvenSeconds | quote }}
+                - name: ACT_ON_STALLED_RESYNC
+                  value: {{ .Values.controller.actOnStalledResync | quote }}
+                - name: ACT_ON_STALE_BITMAP
+                  value: {{ .Values.controller.actOnStaleBitmap | quote }}
+                - name: VERIFY_AFTER_ACT
+                  value: {{ .Values.controller.verifyAfterAct | quote }}
+                - name: DETECT_ORPHAN_RESOURCES
+                  value: {{ .Values.controller.detectOrphanResources | quote }}
+                - name: VERIFY_RESULT_MAX_AGE_SECONDS
+                  value: {{ .Values.controller.verifyResultMaxAgeSeconds | quote }}
+                - name: VERIFY_DEADLINE_SECONDS
+                  value: {{ .Values.controller.verifyDeadlineSeconds | quote }}
+                - name: PAIR_COOLDOWN_SECONDS
+                  value: {{ .Values.controller.gardeFous.pairCooldownSeconds | quote }}
+                - name: GLOBAL_MAX_ACTIONS
+                  value: {{ .Values.controller.gardeFous.globalMaxActions | quote }}
+                - name: GLOBAL_WINDOW_SECONDS
+                  value: {{ .Values.controller.gardeFous.globalWindowSeconds | quote }}
+                - name: EXCLUDED_RESOURCES
+                  value: {{ join "," .Values.controller.excludedResources | quote }}
+                - name: STATE_CONFIGMAP
+                  value: {{ .Values.controller.stateConfigMap | quote }}
+                - name: PUSHGATEWAY_URL
+                  value: {{ if .Values.pushgateway.enabled }}{{ printf "http://drbd-selfheal-pushgateway.%s.svc:%v" .Values.namespace .Values.pushgateway.port | quote }}{{ else }}""{{ end }}
+              volumeMounts:
+                - name: script
+                  mountPath: /opt/drbd-selfheal
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 64Mi
+                limits:
+                  memory: 192Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+          volumes:
+            - name: script
+              configMap:
+                name: drbd-selfheal-script
+                defaultMode: 0555

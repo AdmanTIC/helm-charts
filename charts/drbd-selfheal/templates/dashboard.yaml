@@ -1,0 +1,27 @@
+{{- if .Values.dashboard.enabled }}
+{{- /*
+Tableau de bord Grafana, chargé par le sidecar `grafana-sc-dashboard` de kube-prometheus-stack.
+
+Relevé sur le cluster : le sidecar tourne en `METHOD=WATCH`, `NAMESPACE=ALL`, et retient les
+ConfigMaps portant `grafana_dashboard: "1"`. Ce ConfigMap peut donc rester ici, avec le reste du
+chart, sans rien déposer dans le namespace `monitoring`.
+
+⚠️ `FOLDER_ANNOTATION` n'est PAS configuré sur ce sidecar : l'annotation `grafana_folder` serait
+ignorée. Le tableau de bord atterrit dans le dossier par défaut, comme ceux du chart amont — d'où
+un titre explicite plutôt qu'un classement.
+
+⚠️ `.Files.Get` rend le fichier BRUT : Helm ne réinterprète pas son contenu. C'est ce qui permet
+aux `legendFormat` d'utiliser la syntaxe `{{"{{"}}node{{"}}"}}` de Grafana sans que le moteur de
+gabarits s'en saisisse. Ne jamais passer ce contenu à `tpl`.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: drbd-selfheal-dashboard
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{ .Values.dashboard.sidecarLabel }}: {{ .Values.dashboard.sidecarLabelValue | quote }}
+data:
+  drbd-replication.json: |
+{{ .Files.Get "files/dashboard.json" | indent 4 }}
+{{- end }}

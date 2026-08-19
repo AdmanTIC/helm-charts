@@ -1,0 +1,408 @@
+{{- if .Values.alertes.enabled }}
+{{- $a := .Values.alertes }}
+{{- $doc := "docs/08-exploitation/projet-drbd-resync-calee.md" }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: drbd
+  namespace: {{ .Values.namespace }}
+  labels:
+    # 🛑 Exigé par le `ruleSelector` du Prometheus en place, comme pour les monitors.
+    release: {{ .Values.collecte.prometheusReleaseLabel }}
+spec:
+  groups:
+    # ─── Les deux défauts ────────────────────────────────────────────────────
+    - name: drbd-defauts
+      rules:
+        {{- /*
+        DÉFAUT 1 — resynchronisation « en cours » qui ne progresse plus.
+
+        Approximation assumée : à défaut d'état de réplication exporté, `SyncTarget` est
+        déduit d'un disque local `Inconsistent` connecté à un pair avec un bitmap non vide.
+        C'est déjà anormal quelle qu'en soit la cause.
+
+        `rs-in-flight == 0` est LE discriminant entre « calée » et « lente » : une
+        resynchronisation vivante, même bridée, garde des requêtes en vol. Avec
+        `c-min-rate` à 50 Mio/s, une progression nulle n'est pas un problème de régulation.
+
+        La clause `unless increase(received) > 0` traite au passage le battement de rôle :
+        chaque reconnexion remet `received` à zéro, ce que `increase()` compte comme une
+        progression — l'alerte reste donc muette PENDANT le battement, et ne parle qu'une
+        fois l'état figé pour de bon.
+        */}}
+        - alert: DrbdResyncFigee
+          expr: |
+            (
+                drbd_peerdevice_outofsync_bytes > 0
+              and on(node, name, conn_name) drbd_connection_state{drbd_connection_state="Connected"} == 1
+              and on(node, name, conn_name) drbd_connection_rsinflight_bytes == 0
+              and on(node, name, volume)    drbd_device_state{drbd_device_state="Inconsistent"} == 1
+            )
+            unless on(node, name, conn_name, volume)
+              (increase(drbd_peerdevice_received_bytes[{{ $a.resyncFigeeProgressionWindow }}]) > 0)
+          for: {{ $a.resyncFigeeFor }}
+          labels:
+            severity: critical
+          annotations:
+            summary: >-
+              Resynchronisation DRBD figée : {{ "{{ $labels.name }}" }} sur
+              {{ "{{ $labels.node }}" }} depuis {{ "{{ $labels.conn_name }}" }}
+            description: >-
+              Le disque local est Inconsistent, la connexion est Connected, aucune requête de
+              resynchronisation n'est en vol et {{ "{{ $value | humanize1024 }}" }}o restent
+              divergents sans qu'un octet ne circule depuis
+              {{ $a.resyncFigeeProgressionWindow }}. Le volume reste entre deux états et n'en
+              sortira pas de lui-même. Vérifier le verdict du balayeur
+              (drbd_selfheal_detected) ; à défaut, renégocier la paire à la main depuis la
+              cible — voir {{ $doc }}.
+            runbook: {{ $doc }}
+
+        {{- /*
+        DÉFAUT 2 — bitmap périmé entre deux répliques UpToDate. Le cas dangereux : les deux
+        côtés se croient d'accord, `linstor resource list` est ENTIÈREMENT VERT, et si le
+        troisième nœud tombe les deux restants divergent sans le savoir. Constaté le
+        2026-08-17 entre storage1 et storage3, ~50 Gio marqués divergents.
+
+        🛑 LA DERNIÈRE CLAUSE EST LE CŒUR DE CETTE ALERTE, et la raison du label `node` dans
+        le PodMonitor. `drbd-reactor` n'exporte PAS l'état de disque du pair : il faut aller
+        chercher, dans la vue du PAIR, son propre `drbd_device_state`. `label_replace`
+        renomme le `node` du pair en `conn_name` pour le confronter au `conn_name` porté par
+        la vue locale. Sans ce label, cette alerte est inécrivable.
+
+        `out-of-sync` étant ASYMÉTRIQUE — storage1 annonçait 164 Mio là où storage2 annonçait
+        0 — l'alerte se déclenche depuis le seul côté qui porte le bitmap sale, ce qui est
+        aussi le côté depuis lequel il faut agir.
+        */}}
+        - alert: DrbdBitmapDivergentEntreUpToDate
+          expr: |
+            (
+                drbd_peerdevice_outofsync_bytes > 0
+              and on(node, name, conn_name) drbd_connection_state{drbd_connection_state="Connected"} == 1
+              and on(node, name, conn_name) drbd_connection_rsinflight_bytes == 0
+              and on(node, name, volume)    drbd_device_state{drbd_device_state="UpToDate"} == 1
+              and on(name, volume, conn_name) label_replace(
+                    drbd_device_state{drbd_device_state="UpToDate"} == 1,
+                    "conn_name", "$1", "node", "(.+)")
+            )
+          for: {{ $a.bitmapDivergentFor }}
+          labels:
+            severity: critical
+          annotations:
+            summary: >-
+              Bitmap DRBD divergent entre deux répliques UpToDate :
+              {{ "{{ $labels.name }}" }} entre {{ "{{ $labels.node }}" }} et
+              {{ "{{ $labels.conn_name }}" }}
+            description: >-
+              {{ "{{ $value | humanize1024 }}" }}o sont marqués divergents alors que LES DEUX
+              côtés affichent UpToDate et qu'aucune resynchronisation ne tourne. LINSTOR
+              affiche tout vert : cette alerte est le seul signal. Si le troisième nœud tombe,
+              les deux restants se croient d'accord sans l'être. Voir {{ $doc }}.
+            runbook: {{ $doc }}
+
+    # ─── Santé DRBD au-delà des deux défauts ─────────────────────────────────
+    - name: drbd-sante
+      rules:
+        - alert: DrbdConnexionNonEtablie
+          expr: drbd_connection_state{drbd_connection_state="Connected"} == 0
+          for: {{ $a.connexionDegradeeFor }}
+          labels:
+            severity: warning
+          annotations:
+            summary: >-
+              Connexion DRBD non établie : {{ "{{ $labels.name }}" }} entre
+              {{ "{{ $labels.node }}" }} et {{ "{{ $labels.conn_name }}" }}
+            description: >-
+              La paire n'est pas Connected depuis {{ $a.connexionDegradeeFor }}. Une paire
+              durablement séparée accumule un bitmap divergent, ce qui reconduit au défaut 2.
+            runbook: {{ $doc }}
+
+        - alert: DrbdQuorumPerdu
+          expr: drbd_device_quorum == 0
+          for: {{ $a.quorumPerduFor }}
+          labels:
+            severity: critical
+          annotations:
+            summary: >-
+              Quorum DRBD perdu : {{ "{{ $labels.name }}" }} sur {{ "{{ $labels.node }}" }}
+            description: >-
+              Le volume a perdu son quorum : les écritures y sont suspendues ou en erreur. Le
+              balayeur refusera d'agir sur cette resource tant que le quorum n'est pas rétabli
+              (garde-fou `quorum_local_perdu`).
+            runbook: {{ $doc }}
+
+        {{- /*
+        Ajoutée le 2026-08-18. `drbd_resource_suspended` était exporté depuis le début sans
+        qu'aucune alerte ne l'exploite — alors que c'est le PIRE dénouement possible : le fil
+        LINBIT 1169 décrit un blocage TOTAL des E/S, et nous l'avons constaté sur le volume RWX
+        (`suspended:quorum`, `blocked:upper`) sans qu'aucun dispositif ne le signale.
+
+        ⚠️ Le champ `blocked` de la sortie texte de `drbdsetup` n'existe PAS dans son JSON — le
+        balayeur ne peut donc pas le voir. Cette alerte est la seule voie vers cette
+        information, d'où son importance.
+        */}}
+        - alert: DrbdResourceSuspendue
+          expr: drbd_resource_suspended == 1
+          for: {{ $a.esSuspenduesFor }}
+          labels:
+            severity: critical
+          annotations:
+            summary: >-
+              E/S DRBD suspendues : {{ "{{ $labels.name }}" }} sur {{ "{{ $labels.node }}" }}
+            description: >-
+              Le volume a suspendu ses entrées-sorties — `on-no-quorum: suspend-io` et
+              `on-no-data-accessible: suspend-io` sont tous deux actifs sur ce cluster. Toute
+              écriture applicative est GELÉE, et un montage NFS servi depuis ce volume se figera
+              à son tour, ce qui bloque ensuite le démontage côté client. Chaîne complète et
+              déblocage : {{ $doc }}.
+            runbook: {{ $doc }}
+
+        {{- /*
+        Ajoutée le 2026-08-18, d'après l'analyse de `kvaps` sur `LINBIT/drbd#40` : une réplique
+        peut avoir TOUT reçu — `out-of-sync` vidé à zéro — et rester `Inconsistent`
+        indéfiniment, la resynchronisation étant suspendue derrière une dépendance de connexion
+        dont la libération échoue.
+
+        🛑 ALERTE SEULE. `kvaps` a vérifié qu'aucun déblocage ne fonctionne — ni
+        `disconnect`/`connect` de la source, ni du pair diskless, ni `invalidate`, ni
+        `down`/`up`, ni `pause-sync`/`resume-sync`. Le balayeur l'écarte donc doublement, en
+        exigeant `out-of-sync > 0` ET `resync-suspended:no`, et c'est délibéré : agir ici
+        consommerait les plafonds de fréquence sans rien corriger.
+
+        Ce verrou est réputé corrigé en 9.2.15 et convergent sur 9.3.2 ; l'alerte existe pour le
+        cas où il se manifesterait malgré tout sur la 9.3.3 en place.
+        */}}
+        - alert: DrbdRepliqueInconsistanteSansDivergence
+          expr: |
+            (
+                drbd_device_state{drbd_device_state="Inconsistent"} == 1
+              unless on(node, name, volume) (drbd_peerdevice_outofsync_bytes > 0)
+            )
+            and on(node, name) (
+              count by (node, name) (drbd_connection_state{drbd_connection_state="Connected"} == 1) > 0
+            )
+          for: {{ $a.inconsistanteSansDivergenceFor }}
+          labels:
+            severity: critical
+          annotations:
+            summary: >-
+              Réplique DRBD bloquée Inconsistent sans divergence :
+              {{ "{{ $labels.name }}" }} sur {{ "{{ $labels.node }}" }}
+            description: >-
+              La réplique a reçu toutes les données — son bitmap est vide — mais son disque reste
+              `Inconsistent` et ne bascule jamais `UpToDate`. Le volume tourne donc avec une
+              réplique utilisable en moins, alors que LINSTOR l'affiche en cours de
+              synchronisation. AUCUN déblocage manuel ne fonctionne sur ce verrou : voir
+              {{ $doc }} avant de tenter quoi que ce soit.
+            runbook: {{ $doc }}
+
+    # ─── La collecte elle-même ───────────────────────────────────────────────
+    #
+    # Absent de la fiche de cadrage, et pourtant indispensable : sans ces deux alertes, un
+    # PodMonitor cassé ou un drbd-reactor mort rendrait le SILENCE indistinguable de la SANTÉ.
+    # Tout le dispositif deviendrait décoratif sans que personne ne le sache.
+    - name: drbd-collecte
+      rules:
+        {{- /* Panne totale. Vérifié le 2026-08-17 : cette expression rend bien une série
+        tant qu'aucune collecte n'existe — c'était l'état du cluster avant ce chart. */}}
+        {{- /* Une resource que le NOYAU porte encore alors que LINSTOR a oublié sa
+        configuration. Plus personne ne la réconcilie : elle reste `StandAlone`, sans quorum,
+        E/S suspendues, indéfiniment.
+
+        Le 2026-08-18, ce cas a duré quatorze heures sur `worker3`. Trois alertes se
+        déclenchaient — `DrbdConnexionNonEtablie`, `DrbdQuorumPerdu`, `DrbdResourceSuspendue` —
+        mais toutes sur les SYMPTÔMES : aucune ne disait que la resource n'appartenait à
+        personne, et le diagnostic a demandé de comparer à la main l'inventaire LINSTOR avec ce
+        que portait chaque noyau. Cette alerte le nomme directement.
+
+        ⚠️ Le retrait passe par `drbdsetup down`, PAS `drbdadm` : ce dernier lit
+        `/var/lib/linstor.d` et refuse ce qu'il n'y trouve plus — `not defined in your config
+        (for this host)`. C'est précisément pourquoi un tel résidu survit. */}}
+        - alert: DrbdResourceOrpheline
+          expr: |
+            drbd_selfheal_resource_orpheline == 1
+              and on() (time() - drbd_selfheal_last_run_timestamp_seconds < {{ $a.fraicheurVerdictSeconds }})
+          for: {{ $a.orphelineFor }}
+          labels:
+            severity: warning
+          annotations:
+            summary: >-
+              Resource DRBD orpheline : {{ "{{ $labels.resource }}" }} sur {{ "{{ $labels.node }}" }} n'est plus connue de LINSTOR
+            description: >-
+              Le noyau porte cette resource, mais sa configuration a disparu de
+              `/var/lib/linstor.d` : LINSTOR ne la réconcilie plus. Elle restera `StandAlone`
+              sans quorum indéfiniment, et elle s'opposera à toute recréation du même nom sur ce
+              nœud — donc à l'attachement d'un pod qui y serait planifié. Contrôler qu'elle
+              n'est pas ouverte (`open:no`), puis la retirer avec
+              `drbdsetup down {{ "{{ $labels.resource }}" }}` sur le satellite du nœud. Le balayeur ne le fait pas
+              de lui-même : sur une resource réellement utilisée, ce retrait couperait un volume
+              vivant. Détail dans {{ $doc }}.
+            runbook: {{ $doc }}
+
+        - alert: DrbdCollecteAbsente
+          expr: absent(drbdreactor_up)
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: Aucune métrique DRBD collectée
+            description: >-
+              Plus aucun `drbd-reactor` n'est scruté : les alertes DRBD sont toutes aveugles,
+              y compris celles qui couvrent la divergence silencieuse entre répliques
+              UpToDate. Vérifier le PodMonitor `drbd-satellites` et son label
+              `release={{ .Values.collecte.prometheusReleaseLabel }}`, sans lequel Prometheus
+              l'ignore SANS erreur.
+            runbook: {{ $doc }}
+
+        {{- /* Panne partielle : on compare aux satellites que kube-state-metrics déclare
+        prêts, plutôt qu'à un nombre de nœuds figé dans le chart. */}}
+        - alert: DrbdCollecteIncomplete
+          expr: |
+            count(drbdreactor_up)
+              < count(kube_pod_container_status_ready{namespace="{{ .Values.namespace }}", container="drbd-reactor"} == 1)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Des satellites DRBD prêts ne sont pas scrutés
+            description: >-
+              {{ "{{ $value }}" }} satellite(s) manquent à la collecte. `out-of-sync` étant
+              asymétrique, il se lit depuis LES DEUX extrémités : un nœud non scruté peut
+              porter un bitmap sale que personne ne voit.
+            runbook: {{ $doc }}
+
+    # ─── Le balayeur ─────────────────────────────────────────────────────────
+    - name: drbd-selfheal
+      rules:
+        {{- /*
+        🛑 L'ALERTE CENTRALE DU MODE OBSERVATION. En `dryRun`, chaque détection qui aurait
+        conduit à une action tombe ici : c'est exactement ce qu'il faut avoir vu, sur des cas
+        réels, avant d'armer le balayeur. Sans elle, le mode observation est muet.
+        */}}
+        - alert: DrbdSelfHealDetecteSansAgir
+          expr: |
+            drbd_selfheal_would_act == 1
+              and on() (time() - drbd_selfheal_last_run_timestamp_seconds < {{ $a.fraicheurVerdictSeconds }})
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: >-
+              Le balayeur DRBD aurait renégocié {{ "{{ $labels.resource }}" }}:{{ "{{ $labels.peer }}" }}
+              sur {{ "{{ $labels.node }}" }} ({{ "{{ $labels.defect }}" }})
+            description: >-
+              Tous les critères ET tous les garde-fous sont réunis, mais le balayeur est en
+              MODE OBSERVATION : il n'a rien fait. Confronter ce verdict aux journaux du job
+              (`kubectl -n {{ .Values.namespace }} logs job/...`), puis décider de l'armer —
+              voir {{ $doc }}.
+            runbook: {{ $doc }}
+
+        - alert: DrbdSelfHealActionRefusee
+          expr: |
+            drbd_selfheal_blocked == 1
+              and on() (time() - drbd_selfheal_last_run_timestamp_seconds < {{ $a.fraicheurVerdictSeconds }})
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: >-
+              Garde-fou du balayeur DRBD déclenché ({{ "{{ $labels.reason }}" }}) sur
+              {{ "{{ $labels.resource }}" }}:{{ "{{ $labels.peer }}" }}
+            description: >-
+              Un défaut est établi mais le balayeur refuse d'agir, motif
+              « {{ "{{ $labels.reason }}" }} ». Le défaut PERSISTE et relève désormais de
+              l'humain : le déblocage manuel est décrit dans {{ $doc }}.
+            runbook: {{ $doc }}
+
+        {{- /* L'auto-guérison ne doit jamais masquer le défaut : chaque intervention reste
+        visible. C'est la contrepartie explicite de la décision « alerte ET auto-guérison ». */}}
+        - alert: DrbdSelfHealIntervention
+          expr: increase(drbd_selfheal_actions_total[15m]) > 0
+          labels:
+            severity: info
+          annotations:
+            summary: >-
+              Le balayeur DRBD a renégocié {{ "{{ $labels.resource }}" }}:{{ "{{ $labels.peer }}" }}
+              sur {{ "{{ $labels.node }}" }} ({{ "{{ $labels.defect }}" }})
+            description: >-
+              Une paire a été coupée et reconnectée pour débloquer
+              {{ "{{ $labels.defect }}" }}. Le défaut de DRBD 9.3.3 s'est donc reproduit : la
+              corriger à la source suppose une montée de version, cf. {{ $doc }}.
+            runbook: {{ $doc }}
+
+        {{- /* 🛑 LA PLUS GRAVE DE TOUTES. Le balayeur a lancé une vérification en ligne avant
+        de purger un bitmap, et le noyau a répondu que les blocs divergent RÉELLEMENT. Deux
+        répliques se déclarent `UpToDate` sans porter les mêmes données : c'est une divergence
+        silencieuse. Le balayeur s'est retenu, et c'est précisément pour cela que la
+        vérification préalable existe — une renégociation aurait purgé le bitmap sans
+        transférer un octet, effaçant la divergence au lieu de la réparer.
+
+        Établi sur le cluster le 2026-08-18, sur `keep/keep-pvc` : 6 blocs de 4 KiB divergents
+        entre deux pairs au MÊME UUID courant. DRBD les a resynchronisés de lui-même après la
+        vérification, et une seconde vérification a confirmé 0 bloc — la vérification RÉPARE.
+        Cette alerte reste néanmoins critique : la réparation n'est pas garantie, et une
+        divergence silencieuse mérite un regard humain à chaque fois. */}}
+        - alert: DrbdSelfHealDivergenceReelle
+          expr: |
+            drbd_selfheal_divergence_reelle == 1
+              and on() (time() - drbd_selfheal_last_run_timestamp_seconds < {{ $a.fraicheurVerdictSeconds }})
+          labels:
+            severity: critical
+          annotations:
+            summary: >-
+              DIVERGENCE RÉELLE entre deux répliques UpToDate de {{ "{{ $labels.resource }}" }}
+              ({{ "{{ $labels.node }}" }} ↔ {{ "{{ $labels.peer }}" }})
+            description: >-
+              Une vérification en ligne a trouvé des blocs RÉELLEMENT divergents entre deux
+              pairs qui se déclarent tous deux `UpToDate`. Le balayeur s'est délibérément
+              retenu : purger ce bitmap effacerait la divergence au lieu de la réparer. DRBD
+              resynchronise normalement les blocs que la vérification désigne — contrôler que
+              `drbd_device_out_of_sync_bytes` retombe à zéro, puis relancer une vérification
+              pour confirmer. Si la divergence persiste, la réplique fautive s'identifie en
+              vérifiant chaque pair contre un TROISIÈME : celle qui diffère des deux autres est
+              la mauvaise. Procédure dans {{ $doc }}.
+            runbook: {{ $doc }}
+
+        - alert: DrbdSelfHealActionEnEchec
+          expr: increase(drbd_selfheal_action_failures_total[15m]) > 0
+          labels:
+            severity: critical
+          annotations:
+            summary: >-
+              Échec de renégociation du balayeur DRBD sur
+              {{ "{{ $labels.resource }}" }}:{{ "{{ $labels.peer }}" }}
+            description: >-
+              Le `drbdadm` a échoué : le défaut n'est pas corrigé et l'auto-guérison ne
+              rattrapera pas le coup toute seule. Journaux du job, puis déblocage manuel.
+            runbook: {{ $doc }}
+
+        {{- /* Le balayeur muet est le pire des cas : plus de détection ET plus d'action, sans
+        rien qui le signale. `absent()` couvre le Pushgateway vide, la soustraction couvre le
+        producteur mort dont le dernier groupe survit. */}}
+        - alert: DrbdBalayeurMuet
+          expr: |
+            absent(drbd_selfheal_last_run_timestamp_seconds)
+              or (time() - drbd_selfheal_last_run_timestamp_seconds > {{ $a.balayeurMuetSeconds }})
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Le balayeur DRBD ne tourne plus
+            description: >-
+              Aucun verdict depuis plus de {{ $a.balayeurMuetSeconds }} s, soit plus de trois
+              cycles manqués. Les deux défauts ne sont plus détectés que par les alertes de
+              secours, qui ne voient ni l'état de réplication ni celui du pair. Vérifier le
+              CronJob `drbd-selfheal` et son Pushgateway.
+            runbook: {{ $doc }}
+
+        - alert: DrbdBalayeurRelevesImpossibles
+          expr: increase(drbd_selfheal_exec_errors_total[30m]) > 3
+          labels:
+            severity: warning
+          annotations:
+            summary: Le balayeur DRBD n'arrive pas à lire l'état des satellites
+            description: >-
+              Plus de 3 relevés impossibles en 30 min. Un satellite non lu est un satellite
+              dont le bitmap n'est pas vérifié. Causes probables : droit `pods/exec` retiré,
+              satellite non Ready, ou `drbdsetup` en échec dans le conteneur.
+            runbook: {{ $doc }}
+{{- end }}

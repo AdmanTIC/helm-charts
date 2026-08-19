@@ -1,0 +1,9 @@
+apiVersion: v2
+name: drbd-selfheal
+description: >-
+  Détection et auto-guérison des resynchronisations DRBD calées et des bitmaps périmés :
+  collecte des métriques drbd-reactor (PodMonitor), règles d'alerte, et balayeur CronJob
+  qui renégocie la paire fautive. Livré en MODE OBSERVATION — il détecte, journalise et
+  alerte sans agir.
+type: application
+version: 0.1.0

@@ -1,0 +1,728 @@
+{
+  "uid": "drbd-replication",
+  "title": "DRBD — réplication et auto-guérison",
+  "description": "État de la réplication DRBD et verdicts du balayeur drbd-selfheal. Le seul chiffre fiable est out-of-sync, lu depuis le nœud qui porte le bitmap : ne jamais juger sur un pourcentage.",
+  "tags": ["drbd", "piraeus", "stockage"],
+  "timezone": "browser",
+  "editable": true,
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "ds",
+        "label": "Source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "prometheus" },
+        "hide": 0
+      },
+      {
+        "name": "resource",
+        "label": "Volume",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${ds}" },
+        "query": { "query": "label_values(drbd_peerdevice_outofsync_bytes, name)", "refId": "resource" },
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": { "text": "All", "value": "$__all" },
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "État instantané",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Paires divergentes",
+      "description": "Paires dont le bitmap annonce des blocs non répliqués. Toute valeur non nulle mérite un regard : entre deux pairs UpToDate, c'est une divergence silencieuse que LINSTOR affiche en vert.",
+      "datasource": { "type": "prometheus", "uid": "${ds}" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${ds}" },
+          "expr": "count(drbd_peerdevice_outofsync_bytes{name=~\"$resource\"} > 0) or vector(0)",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background_solid",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Volume divergent",
+      "description": "Somme des bitmaps sales. out-of-sync est ASYMÉTRIQUE : chaque nœud tient le sien, cette somme les additionne.",
+      "datasource": { "type": "prometheus", "uid": "${ds}" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${ds}" },
+          "expr": "sum(drbd_peerdevice_outofsync_bytes{name=~\"$resource\"}) or vector(0)",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Divergence réelle confirmée",
+      "description": "Paires dont une vérification en ligne, lancée APRÈS une renégociation, a trouvé des blocs réellement divergents entre deux répliques UpToDate. Ce n'est pas un bitmap fantôme : les données diffèrent, et la remédiation automatique ne répare pas cela. Toute valeur non nulle appelle un geste humain — voir DrbdSelfHealDivergenceReelle.",
+      "datasource": { "type": "prometheus", "uid": "${ds}" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${ds}" },
+          "expr": "count(drbd_selfheal_divergence_reelle{resource=~\"$resource\"} == 1) or vector(0)",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background_solid",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "dark-red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Resources orphelines",
+      "description": "Resources que le noyau porte encore alors que LINSTOR a oublié leur configuration : plus personne ne les réconcilie. Invisibles dans linstor resource list, par définition. Elles restent StandAlone sans quorum et s'opposeront à toute recréation du même nom sur ce nœud. Retrait par drbdsetup down, jamais drbdadm — voir DrbdResourceOrpheline.",
+      "datasource": { "type": "prometheus", "uid": "${ds}" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${ds}" },
+          "expr": "count(drbd_selfheal_resource_orpheline{resource=~\"$resource\"} == 1) or vector(0)",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background_solid",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Satellites non scrutés",
+      "description": "Satellites prêts que Prometheus ne collecte pas. Un nœud non scruté peut porter un bitmap sale que personne ne voit — le silence ne vaut alors plus preuve de santé.",
+      "datasource": { "type": "prometheus", "uid": "${ds}" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${ds}" },
+          "expr": "(count(kube_pod_container_status_ready{namespace=\"piraeus-datastore\", container=\"drbd-reactor\"} == 1) or vector(0)) - (count(drbdreactor_up) or vector(0))",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background_solid",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Mode du balayeur",
+      "description": "En observation, le balayeur détecte, journalise et alerte SANS exécuter aucun drbdadm. Armé, il renégocie lui-même la paire fautive.",
+      "datasource": { "type": "prometheus", "uid": "${ds}" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${ds}" },
+          "expr": "drbd_selfheal_dry_run",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background_solid",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "Armé", "color": "blue", "index": 0 },
+                "1": { "text": "Observation", "color": "orange", "index": 1 }
+              }
+            },
+            {
+              "type": "special",
+              "options": { "match": "null", "result": { "text": "Inconnu", "color": "red", "index": 2 } }
+            }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Dernier balayage",
+      "description": "Âge du dernier verdict. Le cycle est de 5 min : au-delà de 20 min, plus de trois cycles ont été manqués et le balayeur est considéré muet.",
+      "datasource": { "type": "prometheus", "uid": "${ds}" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${ds}" },
+          "expr": "time() - drbd_selfheal_last_run_timestamp_seconds",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background_solid",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "noValue": "jamais",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 600 },
+              { "color": "red", "value": 1200 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Interventions (24 h)",
+      "description": "Renégociations effectuées par le balayeur. Chaque intervention signale que le défaut de DRBD 9.3.3 s'est reproduit : l'auto-guérison ne doit jamais le masquer.",
+      "datasource": { "type": "prometheus", "uid": "${ds}" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${ds}" },
+          "expr": "sum(increase(drbd_selfheal_actions_total[24h])) or vector(0)",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "text", "value": null },
+              { "color": "orange", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Inventaire",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "table",
+      "title": "Paires divergentes — vues depuis le nœud qui porte le bitmap",
+      "description": "Un tableau et non un histogramme : la question est « lesquelles », pas « comparer 48 grandeurs ». Le nœud listé est celui d'où il faut agir — c'est lui qui tient le bitmap sale.",
+      "datasource": { "type": "prometheus", "uid": "${ds}" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 10 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${ds}" },
+          "expr": "drbd_peerdevice_outofsync_bytes{name=~\"$resource\"} > 0",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "container": true,
+              "endpoint": true,
+              "instance": true,
+              "job": true,
+              "namespace": true,
+              "pod": true,
+              "peer_node_id": true
+            },
+            "renameByName": {
+              "node": "Nœud (porte le bitmap)",
+              "name": "Volume",
+              "conn_name": "Pair",
+              "volume": "Vol.",
+              "Value": "Divergent"
+            },
+            "indexByName": {}
+          }
+        },
+        { "id": "sortBy", "options": { "fields": {}, "sort": [{ "field": "Divergent", "desc": true }] } }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": { "show": false, "reducer": ["sum"], "countRows": false, "fields": "" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "filterable": true },
+          "noValue": "aucune paire divergente"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Divergent" },
+            "properties": [
+              { "id": "unit", "value": "bytes" },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "red", "value": 1 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "table",
+      "title": "Verdicts du balayeur — progression vers le seuil",
+      "description": "Chaque paire suspecte, son défaut, le nombre d'exécutions concordantes et la durée de stagnation réellement PROUVÉE. Les deux conditions doivent être réunies : 2 exécutions et 300 s pour une resync calée, 4 et 900 s pour un bitmap périmé.",
+      "datasource": { "type": "prometheus", "uid": "${ds}" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 10 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${ds}" },
+          "expr": "drbd_selfheal_streak{resource=~\"$resource\"}",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${ds}" },
+          "expr": "drbd_selfheal_proven_stagnation_seconds{resource=~\"$resource\"}",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "prometheus", "uid": "${ds}" },
+          "expr": "drbd_selfheal_out_of_sync_bytes{resource=~\"$resource\"}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        { "id": "merge", "options": {} },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "container": true,
+              "endpoint": true,
+              "instance": true,
+              "job": true,
+              "namespace": true,
+              "pod": true,
+              "service": true
+            },
+            "renameByName": {
+              "node": "Nœud",
+              "resource": "Volume",
+              "peer": "Pair",
+              "volume": "Vol.",
+              "defect": "Défaut",
+              "Value #A": "Exécutions",
+              "Value #B": "Prouvé",
+              "Value #C": "Divergent"
+            },
+            "indexByName": {}
+          }
+        },
+        { "id": "sortBy", "options": { "fields": {}, "sort": [{ "field": "Prouvé", "desc": true }] } }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": { "show": false, "reducer": ["sum"], "countRows": false, "fields": "" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "filterable": true },
+          "noValue": "aucune paire suspecte"
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Prouvé" }, "properties": [{ "id": "unit", "value": "s" }, { "id": "decimals", "value": 0 }] },
+          { "matcher": { "id": "byName", "options": "Divergent" }, "properties": [{ "id": "unit", "value": "bytes" }] },
+          {
+            "matcher": { "id": "byName", "options": "Défaut" },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "stalled_resync": { "text": "Resync calée", "color": "red", "index": 0 },
+                      "stale_bitmap": { "text": "Bitmap périmé", "color": "orange", "index": 1 }
+                    }
+                  }
+                ]
+              },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "row",
+      "title": "Évolution",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 19 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Bitmap divergent par paire",
+      "description": "Une courbe qui ne DESCEND pas est le symptôme : le bitmap ne se purge pas. Elle MONTE sous les écritures applicatives quand la resynchronisation est calée.",
+      "datasource": { "type": "prometheus", "uid": "${ds}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${ds}" },
+          "expr": "drbd_peerdevice_outofsync_bytes{name=~\"$resource\"} > 0",
+          "legendFormat": "{{node}} → {{conn_name}} · {{name}}"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "color": { "mode": "palette-classic-by-name" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisSoftMax": 1
+          },
+          "noValue": "aucune divergence sur la période"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Requêtes de resynchronisation en vol (rs-in-flight)",
+      "description": "LE discriminant entre « calée » et « lente ». Une resynchronisation vivante, même bridée, garde des requêtes en vol ; à zéro avec un bitmap non vide, la machine à états ne relance plus rien. Panneau SÉPARÉ du débit : deux grandeurs de sens différent ne partagent pas un axe.",
+      "datasource": { "type": "prometheus", "uid": "${ds}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${ds}" },
+          "expr": "drbd_connection_rsinflight_bytes{name=~\"$resource\"} > 0",
+          "legendFormat": "{{node}} → {{conn_name}} · {{name}}"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "color": { "mode": "palette-classic-by-name" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisSoftMax": 1
+          },
+          "noValue": "aucune resynchronisation en cours"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Débit reçu par paire",
+      "description": "Dérivée de `received`. Un plateau à zéro pendant qu'un bitmap reste non vide est la signature de la resynchronisation calée. Une remise à zéro du compteur — donc un pic apparent — trahit une reconnexion, c'est-à-dire un battement de rôle.",
+      "datasource": { "type": "prometheus", "uid": "${ds}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${ds}" },
+          "expr": "rate(drbd_peerdevice_received_bytes{name=~\"$resource\"}[5m]) > 0",
+          "legendFormat": "{{node}} ← {{conn_name}} · {{name}}"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0,
+          "color": { "mode": "palette-classic-by-name" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "noValue": "aucun trafic de réplication"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Garde-fous déclenchés — défaut établi, action refusée",
+      "description": "Le balayeur a reconnu un défaut mais s'est interdit d'agir. Ces paires ne se répareront PAS toutes seules : elles relèvent de l'humain. Le quorum est délibérément un garde-fou et non un critère de détection, pour qu'une paire fautive sur un volume sans quorum reste visible ici plutôt que de disparaître.",
+      "datasource": { "type": "prometheus", "uid": "${ds}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${ds}" },
+          "expr": "drbd_selfheal_blocked{resource=~\"$resource\"} == 1",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "container": true,
+              "endpoint": true,
+              "instance": true,
+              "job": true,
+              "namespace": true,
+              "pod": true,
+              "service": true,
+              "Value": true
+            },
+            "renameByName": {
+              "node": "Nœud",
+              "resource": "Volume",
+              "peer": "Pair",
+              "volume": "Vol.",
+              "defect": "Défaut",
+              "reason": "Motif du refus"
+            },
+            "indexByName": {}
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": { "show": false, "reducer": ["sum"], "countRows": false, "fields": "" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "filterable": true },
+          "noValue": "aucun garde-fou déclenché"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Motif du refus" },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "quorum_local_perdu": { "text": "Quorum local perdu", "color": "red", "index": 0 },
+                      "autre_connexion_degradee": { "text": "Autre connexion dégradée", "color": "orange", "index": 1 },
+                      "aucun_pair_sain_restant": { "text": "Aucun pair sain restant", "color": "red", "index": 2 },
+                      "autre_resync_en_cours": { "text": "Autre resync en cours", "color": "blue", "index": 3 },
+                      "une_paire_a_la_fois": { "text": "Une paire à la fois", "color": "blue", "index": 4 },
+                      "delai_de_garde_paire": { "text": "Délai de garde (1 h)", "color": "blue", "index": 5 },
+                      "plafond_global": { "text": "Plafond global atteint", "color": "orange", "index": 6 },
+                      "resource_exclue": { "text": "Volume exclu", "color": "text", "index": 7 },
+                      "resource_suspendue": { "text": "Volume suspendu", "color": "orange", "index": 8 },
+                      "defaut_hors_perimetre": { "text": "Défaut hors périmètre", "color": "text", "index": 9 }
+                    }
+                  }
+                ]
+              },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Défaut" },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "stalled_resync": { "text": "Resync calée", "color": "red", "index": 0 },
+                      "stale_bitmap": { "text": "Bitmap périmé", "color": "orange", "index": 1 }
+                    }
+                  }
+                ]
+              },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

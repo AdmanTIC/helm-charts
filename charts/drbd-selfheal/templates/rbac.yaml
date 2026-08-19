@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: drbd-selfheal
+  namespace: {{ .Values.namespace }}
+---
+{{- /*
+🛑 `pods/exec` EST LE DROIT LE PLUS FORT DE CE CHART, ET IL EST ASSUMÉ. Les pods satellites
+sont privilégiés : pouvoir y exécuter une commande vaut root sur les nœuds storage.
+
+Pourquoi c'est néanmoins la moindre des solutions :
+
+  • L'information nécessaire n'existe NULLE PART AILLEURS. Vérifié le 2026-08-17 :
+    `drbd-reactor` 1.12.0 exporte 28 métriques, dont aucune ne porte l'état de RÉPLICATION ni
+    l'état de disque du pair ; l'API REST de LINSTOR ne donne, par connexion, que
+    `{connected, message}` ; ses propres métriques n'ont ni `replication-state` ni
+    `out-of-sync`. Seul `drbdsetup status --json` distingue une resynchronisation CALÉE d'une
+    resynchronisation LENTE.
+  • L'alternative — un DaemonSet privilégié auprès des satellites — remplacerait un pod
+    autorisé à `exec` par DOUZE pods privilégiés en permanence.
+
+Le droit est donc réduit autant qu'il peut l'être :
+  • un `Role` NAMESPACÉ, jamais un `ClusterRole` ;
+  • `get`/`list` sur les pods, `get`/`create` sur `pods/exec`, et rien d'autre ;
+  • aucun `delete`, aucun droit sur les Secrets.
+
+⚠️ `resourceNames` ne peut pas restreindre davantage : les noms des pods satellites portent un
+suffixe aléatoire régénéré à chaque redéploiement (`linstor-satellite.storage1-q642f`).
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: drbd-selfheal
+  namespace: {{ .Values.namespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    # 🛑 `get` EST INDISPENSABLE, ET SURTOUT PAS UNE COQUILLE À NETTOYER. La bascule WebSocket
+    # est une requête `GET` porteuse d'un en-tête `Upgrade` — la RFC 6455 l'impose — et
+    # Kubernetes DÉRIVE LE VERBE RBAC DE LA MÉTHODE HTTP sur les sous-ressources `connect` :
+    # `GET` → `get`, `POST` → `create`. Le balayeur monte lui-même son WebSocket, donc il lui
+    # faut `get`. Sans lui : `403 Forbidden` sur les 12 nœuds, et un message qui ne dit rien
+    # de la cause — constaté au premier déploiement réel, le 2026-08-18.
+    #
+    # `create` est conservé parce que c'est le verbe conventionnel, celui qu'emploient kubectl
+    # et client-go, qui passent par `POST` (SPDY). Les deux verbes expriment LA MÊME capacité —
+    # exécuter une commande dans un pod — pour deux transports : accorder les deux n'élargit
+    # aucun privilège, n'en accorder qu'un casse silencieusement le transport de l'autre.
+    #
+    # ⚠️ Vérification, à faire avec `--subresource` : `can-i get pods/exec` s'interprète comme
+    # « le pod NOMMÉ exec » et répond à côté.
+    #   kubectl auth can-i get pods --subresource=exec \
+    #     --as=system:serviceaccount:piraeus-datastore:drbd-selfheal -n piraeus-datastore
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: drbd-selfheal
+  namespace: {{ .Values.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: drbd-selfheal
+subjects:
+  - kind: ServiceAccount
+    name: drbd-selfheal
+    namespace: {{ .Values.namespace }}
+---
+{{- /* Écriture limitée au SEUL ConfigMap d'état, par `resourceNames`. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: drbd-selfheal-state
+  namespace: {{ .Values.namespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: [{{ .Values.controller.stateConfigMap | quote }}]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: drbd-selfheal-state
+  namespace: {{ .Values.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: drbd-selfheal-state
+subjects:
+  - kind: ServiceAccount
+    name: drbd-selfheal
+    namespace: {{ .Values.namespace }}
