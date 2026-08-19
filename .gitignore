@@ -3,3 +3,7 @@
 /tmp
 /build-zulip-chart-from-upstream.sh
 charts/checkmk
+
+# Bytecode Python généré par une exécution locale des scripts des charts.
+__pycache__/
+*.py[cod]

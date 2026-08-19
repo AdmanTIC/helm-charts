@@ -1,0 +1,20 @@
+# Patterns à exclure du paquet produit par `helm package`.
+.DS_Store
+.git/
+.gitignore
+.bzr/
+.hg/
+.hgignore
+.svn/
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+.idea/
+.vscode/
+.project
+# files/ contient du Python monté en ConfigMap : le bytecode généré par une
+# exécution locale du script n'a rien à faire dans le paquet.
+__pycache__/
+*.py[cod]
