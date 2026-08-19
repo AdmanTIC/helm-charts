@@ -349,7 +349,7 @@ traefik:
     # idempotent par construction — aucune garde nécessaire.
     # awk plutôt que sed : `a\` multiligne diffère entre busybox et GNU.
     #
-    # Deux injections, deux rôles distincts :
+    # Trois injections, trois rôles distincts :
     #  1. bloc global `servers { trusted_proxies static private_ranges }` —
     #     c'est ce qui fait résoudre {client_ip} / REMOTE_ADDR. Sans lui,
     #     client_ip vaut l'IP du pod Traefik.
@@ -357,6 +357,17 @@ traefik:
     #     donc REMPLACE. Avec `+` (comportement par défaut de reverse_proxy,
     #     RFC 7239), Traefik recevrait "A.B.C.D, 10.85.75.73" dans ClientHost et
     #     `ipStrategy.depth: 1` cesserait d'être déterministe.
+    #  3. `read_timeout 0` à la place de `read_timeout ${PROXY_TIMEOUT}` (60 s
+    #     dans l'image). Caddy réarme ce délai avant CHAQUE lecture amont : à
+    #     60 s, tout flux plus silencieux que ça est coupé (« i/o timeout »),
+    #     ce qui suffit à tuer le SSE d'Argo CD sur un cluster calme. Mesuré sur
+    #     banc : coupure à 60,0 s pile avec le template amont, flux intact
+    #     au-delà de 70 s de silence avec `0`.
+    #     ⚠️ Contrepartie assumée : plus de garde-fou si l'amont se fige en
+    #        cours de réponse. `dial_timeout` et `write_timeout` gardent leurs
+    #        60 s, un backend injoignable échoue donc toujours vite. Pour
+    #        revenir au comportement amont : retirer la stanza `read_timeout`
+    #        de l'awk ci-dessous ET son `grep -q` de garde.
     #
     # Pas de runAsUser ici : l'initContainer hérite du podSecurityContext.
     # Forcer runAsUser: 0 le ferait refuser à l'admission (runAsNonRoot: true).
@@ -385,6 +396,11 @@ traefik:
                 print "    header_up X-Forwarded-For {client_ip}"
                 next
               }
+              /^[[:space:]]*read_timeout / {
+                sub(/read_timeout .*/, "read_timeout 0")
+                print
+                next
+              }
               { print }
             ' /templates/Caddyfile > /work/Caddyfile
             # Garde de sortie : si l'amont réorganise le template et que les
@@ -392,6 +408,7 @@ traefik:
             # plutôt que WAF silencieusement mal configuré.
             grep -q 'trusted_proxies static private_ranges' /work/Caddyfile
             grep -q 'header_up X-Forwarded-For'             /work/Caddyfile
+            grep -q 'read_timeout 0'                        /work/Caddyfile
             echo "--- Caddyfile patché ---"; cat /work/Caddyfile
         volumeMounts:
           - { name: caddy-template, mountPath: /work }
@@ -418,7 +435,13 @@ traefik:
     # Deux épinglages, deux rôles :
     #  - le tag de l'image builder fixe la version de Caddy produite, qui doit
     #    rester alignée sur celle de l'image du sidecar (2.11.3) ;
-    #  - `@v2.5.0` fixe la version de coraza-caddy.
+    #  - `v2.5.0` fixe la version de coraza-caddy.
+    #
+    # Le module est cloné puis PATCHÉ avant compilation : v2.5.0 ne propage
+    # aucun flush au client, ce qui retient toute réponse en flux jusqu'à la fin
+    # de la réponse amont — le `/v2` seul ne suffit donc pas à ressusciter le SSE
+    # (cf. `coraza` § « réponses en flux » plus haut). Correctif d'une ligne,
+    # écrit pour partir en PR chez corazawaf/coraza-caddy tel quel.
       - name: caddy-plugin-build
         # Image OFFICIELLE Caddy, variante builder : Go + xcaddy. Ce n'est pas
         # l'image du WAF, son tag suit la version de Caddy et non celle du CRS.
@@ -433,21 +456,60 @@ traefik:
             # Les caches restent dans la couche du conteneur et disparaissent
             # avec l'initContainer ; seul le binaire survit dans l'emptyDir.
             export HOME=/tmp/build GOPATH=/tmp/build/go GOCACHE=/tmp/build/cache
-            mkdir -p "$GOPATH" "$GOCACHE"
-            xcaddy build --with github.com/corazawaf/coraza-caddy/v2@v2.5.0 \
+            mkdir -p "$GOPATH" "$GOCACHE" /tmp/build/src
+            # INDISPENSABLE : l'image builder pose XCADDY_SETCAP=1, et xcaddy
+            # tente alors un `setcap` sur le binaire produit. Sous
+            # runAsNonRoot + capabilities drop ALL, l'appel échoue, xcaddy sort
+            # en erreur, `set -e` tue l'initContainer et le pod ne démarre
+            # JAMAIS — alors que le binaire, lui, était bien compilé. La file
+            # capability est inutile ici : Caddy écoute sur 8090.
+            export XCADDY_SETCAP=0
+            # Source du module, épinglée. Un tag disparu casse le build.
+            git clone --quiet --depth 1 --branch v2.5.0 \
+                https://github.com/corazawaf/coraza-caddy /tmp/build/src/coraza-caddy
+            cd /tmp/build/src/coraza-caddy
+            # Patch du flush. `rwInterceptor.Flush()` teste `i.w.(http.Flusher)`,
+            # que Caddy n'implémente plus depuis 2.6.3 (le recorder expose
+            # FlushError(), les wrappers Unwrap()) : l'assertion échoue toujours
+            # et aucun flush n'atteint le client. http.ResponseController
+            # reconnaît les trois formes.
+            awk '
+              /if flusher, ok := i\.w\.\(http\.Flusher\); ok \{/ {
+                print "\t//nolint:errcheck"
+                print "\thttp.NewResponseController(i.w).Flush()"
+                skip = 2
+                next
+              }
+              skip > 0 { skip--; next }
+              { print }
+            ' interceptor.go > interceptor.go.patched
+            mv interceptor.go.patched interceptor.go
+            # Gardes de sortie : le motif a changé en amont → build cassé plutôt
+            # que binaire silencieusement non corrigé.
+            grep -q 'NewResponseController(i.w).Flush()' interceptor.go
+            ! grep -q 'i.w.(http.Flusher)' interceptor.go
+            cd /
+            xcaddy build --with github.com/corazawaf/coraza-caddy/v2@v2.5.0=/tmp/build/src/coraza-caddy \
                          --output /work/caddy
             # Garde de sortie : sans le suffixe /v2, Go résoudrait le module v1
             # SANS erreur, et on repartirait pour une phase 4 morte. C'est
             # exactement le piège dans lequel l'image amont est tombée.
             /work/caddy build-info | grep -q 'coraza-caddy/v2' \
               || { echo "!! binaire construit sans coraza-caddy/v2" >&2; exit 1; }
-            /work/caddy build-info | grep coraza
+            # Et le patch doit être dans le binaire : avec un remplacement local
+            # build-info affiche une ligne `=> /tmp/build/src/coraza-caddy`.
+            /work/caddy build-info | grep -q '=>.*coraza-caddy' \
+              || { echo "!! binaire construit sans le patch de flush" >&2; exit 1; }
+            /work/caddy build-info | grep -iE 'coraza|=>'
             /work/caddy version
         volumeMounts:
           - { name: caddy-bin, mountPath: /work }
+        # Deux accès réseau nécessaires au démarrage : le proxy de modules Go
+        # ET github.com, pour le clone du module à patcher. Sans l'un des deux,
+        # l'initContainer échoue et le pod ne démarre pas — donc plus d'ingress
+        # sur ce nœud. Échec bruyant, jamais de WAF muet.
         # GOPROXY : à renseigner si les nœuds ne joignent pas proxy.golang.org.
-        # Sans accès, l'initContainer échoue et le pod ne démarre pas — donc
-        # plus d'ingress sur ce nœud. Échec bruyant, jamais de WAF muet.
+        # Un miroir git interne se déclare en changeant l'URL du clone ci-dessus.
         # env:
         #   - { name: GOPROXY, value: "https://proxy.interne/" }
         securityContext:
