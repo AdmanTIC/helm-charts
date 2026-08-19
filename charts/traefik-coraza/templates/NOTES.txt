@@ -43,17 +43,18 @@ Identité des objets Traefik (alignée sur un install standalone) :
   {{- if eq (dig "name" "" .) "caddy-plugin-build" }}{{ $buildImg = dig "image" "" . }}{{ end }}
 {{- end }}
 {{- $sideImg := "" }}
-{{- $reloadImg := "" }}
 {{- range (.Values.traefik.deployment.additionalContainers | default list) }}
   {{- if eq (dig "name" "" .) "coraza" }}{{ $sideImg = dig "image" "" . }}{{ end }}
-  {{- if eq (dig "name" "" .) "coraza-reload" }}{{ $reloadImg = dig "image" "" . }}{{ end }}
 {{- end }}
-{{- $imgs := compact (list $initImg $sideImg $reloadImg) }}
+{{- $imgs := compact (list $initImg $sideImg) }}
+{{- $autoRestart := false }}
+{{- range (.Values.traefik.deployment.additionalContainers | default list) }}
+  {{- if eq (dig "name" "" .) "coraza" }}{{ if dig "livenessProbe" "" . }}{{ $autoRestart = true }}{{ end }}{{ end }}
+{{- end }}
 
 Image du WAF (le tag figure une fois par conteneur, c'est volontaire) :
   initContainer  {{ $initImg | default "<introuvable>" }}
   sidecar        {{ $sideImg | default "<introuvable>" }}
-  reloader       {{ $reloadImg | default "<absent : rechargement à chaud désactivé>" }}
 
 Binaire Caddy recompilé au démarrage, coraza-caddy/v2 + patch de flush
 (phase 4 ET réponses en flux) :
@@ -61,9 +62,8 @@ Binaire Caddy recompilé au démarrage, coraza-caddy/v2 + patch de flush
 {{- if gt (len (uniq $imgs)) 1 }}
 
 !! LES TAGS DIVERGENT. L'initContainer patche le template Caddyfile livré par SON
-   image, le sidecar consomme le résultat avec la SIENNE et le reloader réadapte
-   le Caddyfile avec la sienne encore : le comportement n'est pas déterministe.
-   Aligner les trois dans values.yaml.
+   image et le sidecar consomme le résultat avec la SIENNE : le comportement
+   n'est pas déterministe. Aligner les deux dans values.yaml.
 {{- end }}
 {{- range $imgs }}
   {{- if contains ":TAG" . }}
@@ -101,10 +101,10 @@ Binaire Caddy recompilé au démarrage, coraza-caddy/v2 + patch de flush
    (flush via http.ResponseController) sans lequel le SSE reste mort.
    Contournement assumé, en attendant coreruleset/coraza-crs-docker#78.
 {{- end }}
-{{- if not $reloadImg }}
+{{- if not $autoRestart }}
 
-!! Rechargement à chaud désactivé (conteneur `coraza-reload` absent). Une
-   modification de la
+!! Prise en compte automatique des changements de configuration DÉSACTIVÉE
+   (pas de livenessProbe sur le conteneur coraza). Une modification de la
    ConfigMap n'aura aucun effet avant un
    `kubectl -n {{ .Release.Namespace }} rollout restart daemonset/{{ include "traefik-coraza.tfFullname" . }}`.
 {{- end }}
@@ -132,13 +132,16 @@ Vérifications à faire maintenant :
    image reconstruite avec coraza-caddy/v2 les produit sans autre changement.
    Inutile de chercher du côté de SecAuditEngine RelevantOnly.
 
-5. Rechargement à chaud de la config Coraza — après un `helm upgrade` qui
-   modifie la ConfigMap, le conteneur `coraza-reload` doit journaliser
-   « rechargement appliqué » dans la minute qui suit (propagation kubelet) :
-     kubectl -n {{ .Release.Namespace }} logs ds/{{ include "traefik-coraza.tfFullname" . }} -c coraza-reload
-   Un « RECHARGEMENT REFUSÉ » signale une règle invalide : le WAF continue de
-   tourner sur la configuration précédente, il n'y a pas de coupure, mais la
-   ConfigMap et la config en vigueur ont divergé.
+5. Changement de configuration — après un `helm upgrade` qui modifie la
+   ConfigMap, le conteneur `coraza` doit redémarrer UNE fois dans les deux
+   minutes (propagation kubelet + période de sonde), et une seule :
+     kubectl -n {{ .Release.Namespace }} get pod -l app.kubernetes.io/name={{ include "traefik-coraza.tfNameLabel" . }} \
+       -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[?(@.name=="coraza")].restartCount}{"\n"}{end}'
+   Un compteur qui grimpe en continu signale une boucle : la sonde journalise sa
+   décision dans les événements du pod.
+   « config.d modifiée mais INVALIDE » signifie que le redémarrage a été REFUSÉ :
+   le WAF tourne toujours sur la configuration précédente — pas de coupure, mais
+   la ConfigMap et la configuration en vigueur ont divergé.
 
 6. Réponses en flux — sur une application qui en produit (SSE, grpc-gateway,
    « watch » d'API), les octets doivent ressortir au fil de l'eau et non à la
