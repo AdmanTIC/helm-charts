@@ -590,6 +590,16 @@ traefik:
               - -c
               - |
                 rev=/tmp/coraza-config.rev
+                # Santé RÉELLE du serveur, d'abord. Sans cette ligne la sonde
+                # répondait « sain » quoi qu'il arrive tant que la configuration
+                # ne bougeait pas : un Caddy figé qui garde son port ouvert
+                # n'était redémarré par personne. La readiness ne rattrape pas le
+                # cas — en mode externalName le Service n'a pas d'endpoints, elle
+                # ne filtre aucun trafic — donc le nœud servait des 502 sans fin.
+                nc -z 127.0.0.1 8090 || {
+                  echo "port 8090 muet : le serveur ne répond plus" >&2
+                  exit 1
+                }
                 cur=$(cat /opt/coraza/config.d/*.conf 2>/dev/null | md5sum | cut -d' ' -f1)
                 # Référence ancrée sur le PROCESSUS (démarrage de PID 1) et non
                 # sur la fraîcheur de /tmp : selon le runtime, la couche
@@ -597,6 +607,11 @@ traefik:
                 # référence périmée redemanderait un redémarrage à CHAQUE sonde
                 # — précisément le CrashLoopBackOff qu'on cherche à éviter.
                 # Reproduit avec la version naïve, corrigé par cet ancrage.
+                # (champ 22 = starttime ; le découpage naïf sur l'espace n'est
+                # juste que parce que le `comm` de PID 1, « caddy », n'en
+                # contient pas.)
+                # En régime normal le startupProbe a déjà écrit cette référence
+                # au démarrage ; ce bloc ne sert plus que s'il était retiré.
                 boot=$(cut -d' ' -f22 /proc/1/stat 2>/dev/null || echo 0)
                 sboot=""; srev=""
                 [ -f "$rev" ] && read -r sboot srev < "$rev"
@@ -608,15 +623,27 @@ traefik:
                 # plus rien du tout. `caddy validate` provisionne réellement le
                 # module — il compile les règles et charge le CRS — sans ouvrir
                 # de port : il cohabite avec le serveur en cours.
-                if caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/tmp/validate.log 2>&1; then
+                # `timeout` borne la validation DANS le script, sous le
+                # timeoutSeconds de la sonde. Sans lui, un validate qui traîne
+                # sur un nœud sous pression fait expirer la sonde ; kubelet
+                # compte alors un échec — donc redémarre, failureThreshold
+                # valant 1 — sans que la validation ait rien conclu. C'est
+                # exactement l'accident que cette garde existe pour empêcher :
+                # redémarrage sur configuration invalide, conteneur qui ne
+                # repart pas, CrashLoopBackOff, et un WAF fail-closed qui ne
+                # sert plus rien.
+                if timeout 12 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/tmp/validate.log 2>&1; then
                   echo "config.d modifiée et valide -> redémarrage du conteneur coraza" >&2
                   exit 1
                 fi
-                echo "config.d modifiée mais INVALIDE : redémarrage refusé, le WAF continue sur la configuration précédente" >&2
+                # Invalide OU indécis : dans les deux cas, pas de redémarrage.
+                echo "config.d modifiée mais NON VALIDÉE : redémarrage refusé, le WAF continue sur la configuration précédente" >&2
                 tail -5 /tmp/validate.log >&2
                 exit 0
           periodSeconds: 20
-          # `caddy validate` charge tout le CRS : compter large.
+          # `caddy validate` charge tout le CRS : compter large. Doit rester
+          # STRICTEMENT supérieur au `timeout 12` du script, pour que ce soit le
+          # script qui tranche et non kubelet.
           timeoutSeconds: 15
           # Un échec ne traduit pas une panne mais une décision : ne pas attendre.
           failureThreshold: 1
@@ -627,7 +654,32 @@ traefik:
           periodSeconds: 5
           failureThreshold: 2
         startupProbe:
-          tcpSocket: { port: 8090 }
+          # Exec plutôt que tcpSocket, parce que cette sonde a désormais un
+          # second rôle : ancrer l'empreinte de la configuration RÉELLEMENT
+          # chargée. Caddy n'ouvre son port qu'après avoir provisionné le
+          # module, donc son premier succès est le premier instant où l'on peut
+          # affirmer « le processus tourne sur ce contenu-là ».
+          #
+          # Sans cet ancrage, c'était la première livenessProbe qui écrivait la
+          # référence, jusqu'à 20 s plus tard : une modification poussée dans
+          # cet intervalle — juste après un rollout, quand on pousse justement un
+          # correctif — était absorbée définitivement. La référence enregistrait
+          # le nouveau contenu, le processus gardait les anciennes règles, et
+          # aucune sonde ultérieure ne pouvait plus s'en apercevoir.
+          #
+          # Kubernetes ne démarre liveness et readiness qu'après le succès du
+          # startupProbe, à CHAQUE démarrage de conteneur, redémarrages compris :
+          # la référence est donc toujours fraîche quand la liveness prend le
+          # relais.
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - |
+                nc -z 127.0.0.1 8090 || exit 1
+                boot=$(cut -d' ' -f22 /proc/1/stat 2>/dev/null || echo 0)
+                cur=$(cat /opt/coraza/config.d/*.conf 2>/dev/null | md5sum | cut -d' ' -f1)
+                echo "$boot $cur" > /tmp/coraza-config.rev
           periodSeconds: 3
           failureThreshold: 20      # chargement du CRS complet
         resources:
