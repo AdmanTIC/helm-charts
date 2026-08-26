@@ -44,6 +44,41 @@ coraza:
   #    Le changer ici impose de le changer là-bas aussi.
   configMapName: coraza-config
 
+  # --- page servie sur refus du WAF ------------------------------------------
+  # Un refus de Coraza remonte par le chemin d'erreur de Caddy, donc
+  # `handle_errors` l'attrape. L'initContainer y injecte un bloc
+  # `handle_errors 403` qui sert le fichier ci-dessous depuis
+  # /opt/coraza/errorpages.
+  #
+  # Portée exacte, mesurée sur banc avec l'image du sidecar :
+  #   - refus en phase 1 ou 2 (règle explicite ET score d'anomalie CRS) → page ✅
+  #   - 403 émis par l'application derrière le WAF → INTACT, l'appli garde le
+  #     sien (une réponse amont n'est pas une erreur Caddy) ✅
+  #   - backend injoignable (502) → page Caddy par défaut, le `403` du
+  #     `handle_errors` la met hors de portée ✅
+  #   - refus en phase 3 ou 4 (côté réponse) → PAS de page : les en-têtes sont
+  #     déjà partis, le client reçoit une connexion coupée. Sans remède ici, et
+  #     sans conséquence pratique : les faux positifs que rencontre un humain
+  #     sont tous côté requête.
+  #
+  # 🛑 Pour revenir à la page par défaut de Caddy, il ne suffit PAS de vider
+  #    `html` : retirer la stanza `handle_errors` de l'awk de l'initContainer ET
+  #    son `grep -q` de garde. Ces deux tableaux sont rendus par le chart
+  #    Traefik avec `toYaml` SANS `tpl` — aucune value ne peut les conditionner.
+  errorPage:
+    # ⚠️ Nom FIXE, non préfixé par le release : référencé *littéralement* dans
+    #    `traefik.deployment.additionalVolumes` et dans le `volumeMounts` du
+    #    sidecar. Le changer ici impose de le changer aux deux endroits.
+    configMapName: coraza-errorpages
+
+    # Page complète, en un seul fichier. Vide → celle livrée par le chart
+    # (files/error-403.html), volontairement neutre et sans marque.
+    #
+    # Tout doit être EN LIGNE — CSS, images en data: URI. Le client qui reçoit
+    # ce refus n'obtiendra pas davantage une feuille de style ou un logo servis
+    # à part : ils repasseraient par le WAF, et rien ne dit qu'ils passeraient.
+    html: ""
+
   service:
     # Pour un ExternalName, le nom du Service n'a aucun effet sur le routage :
     # seul son `externalName` compte. Il reste le nom référencé par l'IngressRoute.
@@ -336,13 +371,20 @@ traefik:
         configMap:
           # ⚠️ doit correspondre à `coraza.configMapName` (non templatable ici).
           name: coraza-config
+      # Page servie sur refus du WAF. ConfigMap séparée de `coraza-config` à
+      # dessein : la sonde de redémarrage hache `config.d/*.conf`, une page
+      # rangée là-bas ferait redémarrer le WAF à chaque retouche de texte.
+      - name: coraza-errorpages
+        configMap:
+          # ⚠️ doit correspondre à `coraza.errorPage.configMapName`.
+          name: coraza-errorpages
 
     # --- patch du template Caddyfile -----------------------------------------
     # Régénéré depuis le template vierge de l'image à chaque démarrage, donc
     # idempotent par construction — aucune garde nécessaire.
     # awk plutôt que sed : `a\` multiligne diffère entre busybox et GNU.
     #
-    # Trois injections, trois rôles distincts :
+    # Quatre injections, quatre rôles distincts :
     #  1. bloc global `servers { trusted_proxies static private_ranges }` —
     #     c'est ce qui fait résoudre {client_ip} / REMOTE_ADDR. Sans lui,
     #     client_ip vaut l'IP du pod Traefik.
@@ -361,6 +403,16 @@ traefik:
     #        60 s, un backend injoignable échoue donc toujours vite. Pour
     #        revenir au comportement amont : retirer la stanza `read_timeout`
     #        de l'awk ci-dessous ET son `grep -q` de garde.
+    #  4. bloc `handle_errors 403` servant /opt/coraza/errorpages/403.html —
+    #     la page montrée à l'humain que le WAF refuse à tort (cf.
+    #     `coraza.errorPage`). Le filtre `403` est ce qui la tient à l'écart
+    #     des 502 : backend injoignable ⇒ page Caddy par défaut, pas un
+    #     message parlant de sécurité.
+    #     ⚠️ L'ancre est le `log {` du bloc de site, PAS celui du bloc global
+    #        (qui porte `level ${LOGLEVEL}`). D'où le drapeau `inproxy`, levé
+    #        sur `reverse_proxy` : le bloc global vient AVANT, il ne peut donc
+    #        pas matcher. Insérer plus haut placerait `handle_errors` dans le
+    #        bloc global, où la directive n'existe pas — Caddy refuserait.
     #
     # Pas de runAsUser ici : l'initContainer hérite du podSecurityContext.
     # Forcer runAsUser: 0 le ferait refuser à l'admission (runAsNonRoot: true).
@@ -385,12 +437,24 @@ traefik:
                 next
               }
               /^[[:space:]]*reverse_proxy / {
+                inproxy = 1
                 print
                 print "    header_up X-Forwarded-For {client_ip}"
                 next
               }
               /^[[:space:]]*read_timeout / {
                 sub(/read_timeout .*/, "read_timeout 0")
+                print
+                next
+              }
+              inproxy && /^[[:space:]]*log[[:space:]]*\{/ {
+                inproxy = 0
+                print "  handle_errors 403 {"
+                print "    root * /opt/coraza/errorpages"
+                print "    rewrite * /403.html"
+                print "    file_server"
+                print "  }"
+                print ""
                 print
                 next
               }
@@ -402,6 +466,7 @@ traefik:
             grep -q 'trusted_proxies static private_ranges' /work/Caddyfile
             grep -q 'header_up X-Forwarded-For'             /work/Caddyfile
             grep -q 'read_timeout 0'                        /work/Caddyfile
+            grep -q 'handle_errors 403'                     /work/Caddyfile
             echo "--- Caddyfile patché ---"; cat /work/Caddyfile
         volumeMounts:
           - { name: caddy-template, mountPath: /work }
@@ -564,6 +629,10 @@ traefik:
             subPath: Caddyfile
             readOnly: true
           - { name: coraza-config, mountPath: /opt/coraza/config.d, readOnly: true }
+          # Montage de RÉPERTOIRE, pas de `subPath` : c'est ce qui fait qu'une
+          # retouche de la page se propage sans redémarrer quoi que ce soit
+          # (un `subPath` fige le contenu au démarrage du conteneur).
+          - { name: coraza-errorpages, mountPath: /opt/coraza/errorpages, readOnly: true }
           # NE JAMAIS monter de volume sur /opt/coraza/config : cela masquerait
           # coraza.conf et crs-setup.conf livrés par l'image.
         # --- prise en compte des changements de la ConfigMap ------------------

@@ -1,0 +1,36 @@
+# ---------------------------------------------------------------------------
+#  Page servie sur un refus du WAF (403 émis par Coraza)
+#
+#  Montée dans le sidecar sur /opt/coraza/errorpages, et servie par le bloc
+#  `handle_errors 403` injecté dans le Caddyfile par l'initContainer
+#  `caddy-template-patch`. Les trois morceaux vont ensemble : changer le nom de
+#  la ConfigMap ici impose de le changer dans `traefik.deployment` (volume ET
+#  volumeMount), qui ne passent pas par le moteur de template.
+#
+#  ⚠️ VOLONTAIREMENT DANS SA PROPRE ConfigMap, séparée de `coraza-config`.
+#     La sonde de redémarrage du sidecar hache `config.d/*.conf` : une page
+#     rangée là-bas ferait redémarrer le WAF à chaque retouche de texte. Ici,
+#     kubelet resynchronise le volume et `file_server` relit le fichier à la
+#     requête suivante — modifier la page ne coupe RIEN. Compter la minute de
+#     propagation du volume, pas plus.
+#
+#  Ce que la page ne doit pas faire :
+#    - référencer une ressource externe (le refus tombe souvent sur un client
+#      qui n'obtiendra pas davantage la feuille de style ou l'image) : un seul
+#      fichier, tout en ligne ;
+#    - nommer la règle ou le moteur qui a refusé : c'est du renseignement offert
+#      à qui sonde.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.coraza.errorPage.configMapName }}
+  labels:
+    {{- include "traefik-coraza.labels" . | nindent 4 }}
+data:
+  403.html: |
+{{- if .Values.coraza.errorPage.html }}
+{{ .Values.coraza.errorPage.html | indent 4 }}
+{{- else }}
+{{ .Files.Get "files/error-403.html" | indent 4 }}
+{{- end }}

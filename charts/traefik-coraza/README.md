@@ -15,6 +15,7 @@ lire avant de modifier quoi que ce soit** : plusieurs sont contre-intuitifs.
 | `ConfigMap` `coraza-config` | [templates/configmap.yaml](templates/configmap.yaml) | `custom.conf`, monté sur `/opt/coraza/config.d` |
 | `Service` `coraza` | [templates/service-coraza.yaml](templates/service-coraza.yaml) | épinglage local du sidecar (`ExternalName` ou `ClusterIP`+`nativeLB`) |
 | `IngressRoute` `waf-catchall` | [templates/ingressroute-catchall.yaml](templates/ingressroute-catchall.yaml) | capte tout `websecure` en priorité 1000000 |
+| `ConfigMap` `coraza-errorpages` | [templates/configmap-errorpage.yaml](templates/configmap-errorpage.yaml) | `403.html`, la page servie sur un refus du WAF |
 | overrides du subchart | [values.yaml](values.yaml), section `traefik:` | DaemonSet, NodePort, entrypoint `internal`, sidecar + initContainer |
 
 Le sidecar Coraza et l'initContainer qui patche le Caddyfile ne sont pas des
@@ -557,6 +558,72 @@ Il est contournable — inscrire l'empreinte de la configuration dans le Caddyfi
 via `directives` change la clé du pool — mais cela repose sur un détail interne
 d'amont, et l'écart de coupure avec le redémarrage est de 2 s. Le redémarrage a
 été préféré.
+
+## Page d'erreur servie sur un refus
+
+Sans réglage, un refus de Coraza rend le `403 Forbidden` nu de Caddy : une ligne
+de texte noir sur blanc. Pour un utilisateur légitime pris par un faux positif,
+ce message ressemble à un refus de **droits** — il croit son compte bloqué et
+signale la mauvaise chose.
+
+Le chart sert donc une page à la place. Trois morceaux, qui vont ensemble :
+
+| Morceau | Où |
+|---|---|
+| la page | `ConfigMap` `coraza-errorpages`, clé `403.html` |
+| le montage | `traefik.deployment` — volume + `volumeMount` sur `/opt/coraza/errorpages` |
+| le service de la page | bloc `handle_errors 403` injecté dans le Caddyfile par l'initContainer |
+
+Pour la remplacer, une seule clé :
+
+```yaml
+coraza:
+  errorPage:
+    html: |
+      <!DOCTYPE html>
+      …
+```
+
+Vide → celle livrée par le chart ([files/error-403.html](files/error-403.html)),
+neutre et sans marque.
+
+**Un seul fichier, tout en ligne** — CSS dans la page, images en `data:` URI. Le
+client qui reçoit ce refus n'obtiendra pas davantage une feuille de style ou un
+logo servis à part : ils repasseraient par le WAF, sur une requête du même
+client que celui qu'il vient de refuser. Une page à moitié rendue est pire que
+pas de page.
+
+### Portée exacte, mesurée sur banc
+
+| Cas | Résultat |
+|---|---|
+| refus en phase 1 ou 2 — règle explicite **et** score d'anomalie CRS | la page, code 403 |
+| `403` émis par l'application derrière le WAF | **intact**, l'appli garde le sien |
+| backend injoignable (502) | page Caddy par défaut |
+| refus en phase 3 ou 4 (côté réponse) | **pas de page** : connexion coupée |
+
+Les deux lignes du milieu tiennent au filtre `403` de `handle_errors` et au fait
+qu'une réponse amont n'est pas une erreur Caddy. La dernière est sans remède :
+les en-têtes sont déjà partis quand la phase 3 refuse. Sans conséquence
+pratique, les faux positifs que rencontre un humain étant tous côté requête.
+
+### Modifier la page ne coupe rien
+
+La page vit dans **sa propre** ConfigMap, montée en **répertoire** — pas en
+`subPath`. Kubelet resynchronise le volume, `file_server` relit le fichier à la
+requête suivante : pas de rollout, pas de redémarrage du sidecar, pas de coupure
+du WAF. Compter la minute de propagation du volume.
+
+C'est la raison d'être de la ConfigMap séparée : la sonde de redémarrage hache
+`config.d/*.conf`, une page rangée là-bas ferait redémarrer le WAF à chaque
+retouche de texte.
+
+### Pour revenir à la page par défaut de Caddy
+
+Vider `html` ne suffit pas — il faut retirer la stanza `handle_errors` de l'awk
+de l'initContainer **et** son `grep -q` de garde. `initContainers` et
+`additionalContainers` sont rendus par le chart Traefik avec `toYaml` **sans**
+`tpl` : aucune value ne peut les conditionner.
 
 ## Limites connues
 
