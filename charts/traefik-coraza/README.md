@@ -587,6 +587,29 @@ coraza:
 Vide → celle livrée par le chart ([files/error-403.html](files/error-403.html)),
 neutre et sans marque.
 
+### Ce que la page peut afficher
+
+Elle est rendue comme un template Go par le module `templates` de Caddy, ce qui
+donne accès à ce qu'elle ne peut pas savoir d'elle-même :
+
+| Placeholder | Valeur |
+|---|---|
+| `{{.ClientIP}}` | IP réelle du client — celle de la ligne d'audit Coraza, pas celle de Traefik |
+| `{{.RemoteIP}}` | IP du pair TCP, donc Traefik. Sans intérêt ici |
+| `{{.Req.Host}}` | hôte demandé |
+
+`.ClientIP` est résolu par le même `trusted_proxies` / `client_ip_headers` que
+le reste du Caddyfile. **Mesuré sur banc** : sans `X-Forwarded-For` il rend l'IP
+du pair, avec, celle du client.
+
+L'URL et l'heure, elles, s'écrivent en JavaScript — la page est servie sur
+l'URL d'origine, `window.location.href` la porte déjà.
+
+> 🛑 Corollaire : toute double accolade ouvrante qui n'est pas un placeholder
+> connu fait échouer le rendu **à la requête**, et Caddy répond 500. Un refus du
+> WAF deviendrait une panne, sur la seule page que personne ne surveille. Le
+> chart refuse de rendre dans ce cas plutôt que de le laisser partir.
+
 **Un seul fichier, tout en ligne** — CSS dans la page, images en `data:` URI. Le
 client qui reçoit ce refus n'obtiendra pas davantage une feuille de style ou un
 logo servis à part : ils repasseraient par le WAF, sur une requête du même

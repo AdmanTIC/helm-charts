@@ -21,6 +21,22 @@
 #    - nommer la règle ou le moteur qui a refusé : c'est du renseignement offert
 #      à qui sonde.
 # ---------------------------------------------------------------------------
+#
+#  La page est rendue comme un template Go par le module `templates` de Caddy —
+#  c'est ce qui permet d'y afficher l'IP du client. Corollaire : une double
+#  accolade ouvrante qui n'est pas un placeholder connu fait échouer le rendu à
+#  la requête, et Caddy répond 500. Un refus du WAF deviendrait une panne, sur
+#  la seule page que personne ne surveille. La garde ci-dessous préfère un échec
+#  au rendu du chart, où il se voit tout de suite.
+#
+#  ⚠️ Ne PAS écrire de double accolade littérale dans ce fichier, commentaires
+#     compris : Helm les interprète avant que YAML ne voie le « # ».
+# ---------------------------------------------------------------------------
+{{- $html := .Values.coraza.errorPage.html | default (.Files.Get "files/error-403.html") }}
+{{- $stray := regexReplaceAll "\\{\\{[^}]*\\}\\}" $html "" }}
+{{- if contains "{{" $stray }}
+{{- fail "coraza.errorPage.html : double accolade ouvrante sans fermante. La page est rendue comme un template Go par le module templates de Caddy ; une accolade orpheline la fait repondre 500 au lieu du 403. Placeholders admis : .ClientIP, .RemoteIP, .Req.Host" }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -29,8 +45,4 @@ metadata:
     {{- include "traefik-coraza.labels" . | nindent 4 }}
 data:
   403.html: |
-{{- if .Values.coraza.errorPage.html }}
-{{ .Values.coraza.errorPage.html | indent 4 }}
-{{- else }}
-{{ .Files.Get "files/error-403.html" | indent 4 }}
-{{- end }}
+{{ $html | indent 4 }}

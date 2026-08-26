@@ -74,6 +74,14 @@ coraza:
     # Page complète, en un seul fichier. Vide → celle livrée par le chart
     # (files/error-403.html), volontairement neutre et sans marque.
     #
+    # La page est rendue comme un template Go par le module `templates` de
+    # Caddy. Placeholders utiles, tous résolus côté serveur :
+    #   {{.ClientIP}}  IP réelle du client (celle de la ligne d'audit Coraza)
+    #   {{.RemoteIP}}  IP du pair TCP, donc Traefik — sans intérêt ici
+    #   {{.Req.Host}}  hôte demandé
+    # 🛑 Tout autre `{{` est une erreur de rendu, donc un 500 à la place du 403.
+    #    Le chart refuse de rendre plutôt que de laisser partir ça en production.
+    #
     # Tout doit être EN LIGNE — CSS, images en data: URI. Le client qui reçoit
     # ce refus n'obtiendra pas davantage une feuille de style ou un logo servis
     # à part : ils repasseraient par le WAF, et rien ne dit qu'ils passeraient.
@@ -413,6 +421,16 @@ traefik:
     #        sur `reverse_proxy` : le bloc global vient AVANT, il ne peut donc
     #        pas matcher. Insérer plus haut placerait `handle_errors` dans le
     #        bloc global, où la directive n'existe pas — Caddy refuserait.
+    #     `templates` est là pour la seule chose que la page ne peut pas savoir
+    #     d'elle-même : l'IP du client. `{{.ClientIP}}` est résolu par le même
+    #     `trusted_proxies` / `client_ip_headers` que ci-dessus, donc il donne
+    #     l'IP que voit Coraza — celle qui figure dans la ligne d'audit, pas
+    #     celle de Traefik. Vérifié sur banc : sans `X-Forwarded-For` il rend
+    #     l'IP du pair, avec, celle du client.
+    #     ⚠️ La page devient un template Go : un `{{` littéral qui n'est pas un
+    #        de nos placeholders la fait échouer au rendu, et Caddy répond 500 —
+    #        un refus du WAF deviendrait une panne. templates/configmap-errorpage.yaml
+    #        refuse de rendre dans ce cas plutôt que de le laisser passer.
     #
     # Pas de runAsUser ici : l'initContainer hérite du podSecurityContext.
     # Forcer runAsUser: 0 le ferait refuser à l'admission (runAsNonRoot: true).
@@ -452,6 +470,7 @@ traefik:
                 print "  handle_errors 403 {"
                 print "    root * /opt/coraza/errorpages"
                 print "    rewrite * /403.html"
+                print "    templates"
                 print "    file_server"
                 print "  }"
                 print ""
@@ -467,6 +486,7 @@ traefik:
             grep -q 'header_up X-Forwarded-For'             /work/Caddyfile
             grep -q 'read_timeout 0'                        /work/Caddyfile
             grep -q 'handle_errors 403'                     /work/Caddyfile
+            grep -q 'templates'                             /work/Caddyfile
             echo "--- Caddyfile patché ---"; cat /work/Caddyfile
         volumeMounts:
           - { name: caddy-template, mountPath: /work }
