@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - master
+  # Relance manuelle, depuis l'onglet Actions ou `gh workflow run publish-charts.yml`.
+  # Ajouté après la panne Actions du 2026-08-26 : l'événement de push avait été
+  # jeté par GitHub, et sans ce déclencheur il n'y avait aucun moyen de relancer
+  # la publication autrement qu'en poussant un commit vide.
+  workflow_dispatch:
 
 jobs:
 
