@@ -235,44 +235,72 @@ Règles de rédaction :
 
 ## Inspection des réponses (phase 4)
 
-**En l'état, avec l'image amont, la phase 4 ne s'exécute pas.** Le montage
-sandwich la rend *atteignable* — c'est sa justification face à ForwardAuth ou au
-plugin WASM — mais le binaire livré ne l'exécute pas.
+**Réglé en amont le 2026-08-26.** L'image épinglée par ce chart embarque
+désormais `coraza-caddy/v2`, la phase 4 s'exécute et les entrées d'audit
+`"transaction"` sont produites.
 
-L'image `ghcr.io/coreruleset/coraza-crs:*-caddy-*` est construite avec
+Historique, parce qu'il explique la forme du chart : l'image
+`ghcr.io/coreruleset/coraza-crs:*-caddy-*` était construite avec
 `xcaddy build --with github.com/corazawaf/coraza-caddy`, **sans suffixe de
-version**. Go résout donc le module v1 : `coraza-caddy` v1.2.2 (janvier 2023),
-sur un `coraza/v3` pré-release. Dans cette version, `stream.go` n'appelle
-`ProcessResponseHeaders()` que depuis `WriteHeader()` ; `ProcessResponseBody()`
-n'est appelé **nulle part**. L'interception du corps de réponse est arrivée en
-v2 (`interceptor.go`).
+version**. Go résolvait donc le module v1 — `coraza-caddy` v1.2.2 (janvier
+2023), sur un `coraza/v3` pré-release — dans lequel `ProcessResponseBody()`
+n'est appelé **nulle part**. Le montage sandwich rendait la phase 4
+*atteignable* ; le binaire ne l'exécutait pas.
 
-Constaté sur banc local avec le tag épinglé dans `values.yaml` :
+[coreruleset/coraza-crs-docker#78](https://github.com/coreruleset/coraza-crs-docker/pull/78)
+a corrigé la recette — `ARG CORAZA_VERSION` déclaré, module construit en
+`coraza-caddy/v2@${CORAZA_VERSION}` — et a été **fusionnée le 2026-08-26**. Le
+même commit a retiré le `tag:'${CORAZA_TAG}'` des `SecDefaultAction` par défaut,
+qui empêchait les coraza récents de démarrer.
 
-| | image amont (coraza-caddy v1.2.2) | binaire reconstruit (v2.5.0 / coraza v3.7.0) |
+Vérifié sur le tag épinglé ici (`4.28.0-caddy-alpine-202608260808`, construit le
+2026-08-26 à 21:30 UTC, donc après la fusion) :
+
+```console
+$ docker run --rm --entrypoint caddy \
+    ghcr.io/coreruleset/coraza-crs:4.28.0-caddy-alpine-202608260808 build-info
+dep  github.com/corazawaf/coraza-caddy/v2  v2.5.0
+dep  github.com/corazawaf/coraza/v3        v3.7.0
+dep  github.com/caddyserver/caddy/v2       v2.11.3
+```
+
+| | ancienne image (v1.2.2) | image du 2026-08-26 (v2.5.0) |
 |---|---|---|
 | règle `phase:3` sur `RESPONSE_CONTENT_TYPE` | déclenche | déclenche |
 | règle `phase:4` quelconque | **jamais** | déclenche |
 | `RESPONSE_BODY` | **toujours vide** | contient le corps |
 | entrées d'audit `"transaction"` | **absentes** | présentes |
+| `tag:` dans `SecDefaultAction` | injecté, bloquant | retiré |
 
-Ce n'est ni un problème de `SecResponseBodyMimeType` (le `; charset=…` est bien
-retiré par Coraza avant comparaison), ni de compression, ni du sandwich : le
-même résultat s'observe sur l'image seule, sans Traefik.
+### Ce que l'image ne corrige toujours pas
 
-Les phases 1 et 2 — l'essentiel du CRS, toute la protection des requêtes — sont
-intactes.
+La version qu'elle épingle, `coraza-caddy` **v2.5.0**, porte deux défauts du
+chemin de réponse :
+
+| défaut | v2.5.0 (l'image) | v2.6.0 | v2.6.0 + patch du chart |
+|---|---|---|---|
+| WebSocket (statut 101 jamais écrit) | **cassé** | corrigé | corrigé |
+| réponses en flux (aucun flush propagé) | **retenu** | **retenu** | au fil de l'eau |
+
+`docker-bake.hcl` amont épingle encore `v2.5.0` alors que **v2.6.0** est publiée
+depuis le 2026-08-24 : la correction WebSocket est là-haut, elle n'est
+simplement pas encore prise par l'image. Et le flush n'est corrigé nulle part —
+[corazawaf/coraza-caddy#344](https://github.com/corazawaf/coraza-caddy/pull/344)
+est ouverte pour ça depuis le 2026-08-26.
+
+C'est **la seule raison** pour laquelle le chart compile encore un binaire au
+démarrage. Détail des deux défauts : §§ « Réponses en flux » et « WebSocket ».
 
 ### Correctif : compilation au démarrage du pod
 
-Le correctif est un `/v2` dans une ligne du Dockerfile amont, proposé en
-[coreruleset/coraza-crs-docker#78](https://github.com/coreruleset/coraza-crs-docker/pull/78).
-En attendant sa publication, le chart **recompile le binaire Caddy au démarrage
-de chaque pod** plutôt que de publier une image :
+Le chart **recompile le binaire Caddy au démarrage de chaque pod** plutôt que de
+publier une image :
 
 ```
-initContainer caddy-plugin-build   image officielle caddy:<version>-builder
-  └─ xcaddy build --with github.com/corazawaf/coraza-caddy/v2@v2.5.0
+initContainer caddy-plugin-build   image officielle caddy:2.11.4-builder
+  └─ clone coraza-caddy v2.6.0     (≠ v2.5.0 de l'image : corrige les WebSocket)
+  └─ patch d'une ligne             (flush via http.ResponseController)
+  └─ xcaddy build --with github.com/corazawaf/coraza-caddy/v2@v2.6.0
        └─ emptyDir caddy-bin  →  monté par-dessus /usr/bin/caddy dans `coraza`
 ```
 
@@ -284,7 +312,7 @@ artefact, il vit dans un `emptyDir` et meurt avec le pod.
 proche. Ce qu'il coûte :
 
 - **le démarrage du pod est allongé par la compilation** — **~2 min** mesurées
-  caches vides sur `caddy:2.11.3-builder`, 1 CPU, binaire de 50 Mo. Sur un
+  caches vides sur l'image builder, 1 CPU, binaire de 50 Mo. Sur un
   DaemonSet, chaque nœud repasse par là à chaque rollout, et il ne sert aucun
   trafic pendant ce temps ;
 - **les nœuds doivent joindre le proxy de modules Go *et* github.com au
@@ -296,28 +324,50 @@ proche. Ce qu'il coûte :
 - **la compilation consomme CPU et mémoire** au démarrage (`requests: 1 CPU,
   1 Gi`).
 
-Deux épinglages, à garder alignés :
+Deux épinglages :
 
 | épinglage | rôle |
 |---|---|
-| tag de `caddy:<version>-builder` | version de Caddy produite — doit suivre celle de l'image du sidecar |
-| `@v2.5.0` sur le module | version de coraza-caddy |
+| `@v2.6.0` sur le module | version de coraza-caddy. **Volontairement plus récente que le `v2.5.0` de l'image** : c'est elle qui répare les WebSocket |
+| tag de `caddy:2.11.4-builder` | version de Caddy produite. `coraza-caddy` v2.6.0 exige `caddy >= v2.11.4` dans son `go.mod`, et MVS l'emporte sur le pin de xcaddy : le binaire serait 2.11.4 quel que soit ce tag, autant que le tag le dise |
 
-Une garde de sortie vérifie `caddy build-info | grep coraza-caddy/v2` avant de
-laisser le pod démarrer : sans le suffixe `/v2`, Go résoudrait le module v1
-**sans la moindre erreur**, et on repartirait pour une phase 4 morte. C'est très
-exactement le piège dans lequel l'image amont est tombée.
+L'image du sidecar est en Caddy 2.11.3 ; le binaire monté par-dessus est en
+2.11.4. Seul ce dernier s'exécute, et le template `Caddyfile` de l'image est
+identique entre les deux versions (vérifié par diff).
 
-### Le jour où la correction amont est publiée
+> ⚠️ **Ne pas monter au-delà de Caddy 2.11.4 sans rejouer le test WebSocket.**
+> [caddyserver/caddy#7913](https://github.com/caddyserver/caddy/pull/7913),
+> attendu en 2.11.5, enveloppe tout `ResponseWriter` dans un
+> `IdleTimeoutWriter` qui n'expose plus que `Unwrap()` : l'assertion
+> `i.w.(http.Hijacker)` de `coraza-caddy` échouera à son tour et les WebSocket
+> recasseront. C'est l'autre moitié de la PR #344 amont.
 
-Reprendre le tag officiel dans les deux conteneurs, supprimer l'initContainer
-`caddy-plugin-build`, le volume `caddy-bin` et ses deux montages. `NOTES.txt`
-détecte l'absence de l'initContainer et redescend l'avertissement « phase 4
-inactive » si le tag utilisé n'embarque pas encore le correctif.
+Trois gardes de sortie avant de laisser le pod démarrer :
 
-Même chose si vous préférez à tout moment une image prête à l'emploi : il suffit
-d'appliquer le patch de la PR #78 à `caddy/Dockerfile` amont, de publier l'image
-où vous voulez et de retirer l'initContainer.
+| garde | ce qu'elle rattrape |
+|---|---|
+| `grep -q 'NewResponseController(i.w).Flush()'` + absence de `i.w.(http.Flusher)` | l'ancre du patch a bougé en amont → flux muets |
+| `grep -q hijackerTracker` | le tag cloné ne contient pas le correctif WebSocket |
+| `caddy build-info \| grep coraza-caddy/v2` puis `grep '=>'` | module v1 résolu en silence, ou binaire construit sans le patch |
+
+### Le jour où l'image suffira
+
+Deux conditions, toutes deux en amont, aucune dans ce chart :
+
+1. [corazawaf/coraza-caddy#344](https://github.com/corazawaf/coraza-caddy/pull/344)
+   publiée (le flush par `http.NewResponseController`) — probablement en v2.7.0 ;
+2. `docker-bake.hcl` de `coreruleset/coraza-crs-docker` remonté à cette version
+   (il épingle encore `v2.5.0`, alors que v2.6.0 est publiée depuis le
+   2026-08-24 — Renovate devrait s'en charger) et une image republiée.
+
+Alors : reprendre le tag officiel, supprimer l'initContainer
+`caddy-plugin-build`, le volume `caddy-bin` et ses deux montages. La procédure
+de vérification est déjà écrite — c'est celle des deux sections « Non-régression
+à rejouer à chaque bump » ci-dessous ; `scripts/verify.sh` §6 bis lit la version
+du module et la présence du patch directement dans le pod.
+
+`NOTES.txt` détecte l'absence de l'initContainer et affiche alors ce qu'il faut
+vérifier sur le tag choisi.
 
 ### Pourquoi pas l'API de build de Caddy
 
@@ -329,13 +379,12 @@ navigateur ou `curl`. C'est un filtrage délibéré ; l'automatiser depuis chaqu
 démarrage de pod reviendrait à le contourner. Si le compromis vous intéresse,
 c'est une question à poser à l'équipe Caddy, pas un `User-Agent` à falsifier.
 
-### Pourquoi pas une image officielle
+### Pourquoi pas simplement l'image officielle
 
-Il n'en existe pas qui convienne, et **aucun tag plus récent n'y changera rien** :
-le défaut est dans la recette de construction, pas dans une version.
+C'est désormais la bonne question, et la réponse tient en une version.
 
-`coreruleset/coraza-crs-docker` épingle pourtant bien la bonne version. Son
-`docker-bake.hcl` déclare
+L'image publiée après la fusion de la PR #78 embarque bien `coraza-caddy/v2`.
+Mais `docker-bake.hcl` amont épingle
 
 ```hcl
 variable "coraza-version" {
@@ -344,26 +393,26 @@ variable "coraza-version" {
 }
 ```
 
-et la passe au build comme `CORAZA_VERSION`. Mais `caddy/Dockerfile` ne déclare
-aucun `ARG CORAZA_VERSION`, ne l'utilise nulle part, et construit
-`--with github.com/corazawaf/coraza-caddy` — chemin de module **v1**. L'argument
-est donc ignoré : Renovate met consciencieusement à jour un pin sans effet
-(PR #37 → v2.1.0, PR #64 → v2.5.0) pendant que toutes les images publiées
-embarquent v1.2.2. Vérifié sur le tag épinglé ici avec `caddy build-info`.
+et **v2.5.0 casse les WebSocket** : `corazawaf/coraza-caddy` a corrigé le défaut
+dans la [PR #262](https://github.com/corazawaf/coraza-caddy/pull/262), livrée en
+v2.6.0 le 2026-08-24 — deux jours avant la fusion de la PR #78, mais le pin n'a
+pas suivi. Le flush, lui, n'est corrigé dans aucune version publiée.
 
-La correction amont tient en deux lignes — déclarer l'`ARG` et l'utiliser :
+Prendre l'image telle quelle reviendrait donc à échanger la phase 4 contre les
+WebSocket, et à garder les flux muets. D'où le binaire recompilé, réduit à ce
+qu'il apporte encore : une version du module plus récente, et un patch d'une
+ligne.
+
+Pour mémoire, l'historique du pin ignoré : `caddy/Dockerfile` ne déclarait aucun
+`ARG CORAZA_VERSION` et construisait `--with github.com/corazawaf/coraza-caddy`,
+chemin de module **v1**. Renovate mettait consciencieusement à jour un pin sans
+effet (PR #37 → v2.1.0, PR #64 → v2.5.0) pendant que toutes les images publiées
+embarquaient v1.2.2. La correction tenait en deux lignes :
 
 ```dockerfile
 ARG CORAZA_VERSION
 RUN xcaddy build --with github.com/corazawaf/coraza-caddy/v2@${CORAZA_VERSION}
 ```
-
-Construit en local : le binaire obtenu embarque bien coraza-caddy v2.5.0 et
-coraza v3.7.0, soit exactement la version que le `docker-bake.hcl` amont croit
-déjà livrer.
-
-C'est cette correction qui fait l'objet de la PR #78, et c'est elle qui rendra
-l'initContainer de compilation inutile.
 
 Les autres variantes du même dépôt ne sont pas des porte-de-sortie : `nginx`
 s'appuie sur `libcoraza` (moteur Go, hôte C) mais reste nginx, écarté par
@@ -404,15 +453,15 @@ reviendrait à renoncer à l'inspection de toutes les réponses JSON.
 
 ### Trois défauts sur le même chemin
 
-Reproduits et corrigés sur banc local le 2026-08-19, avec l'image du sidecar
-épinglée et Caddy 2.11.3, derrière un amont qui émet une ligne JSON par seconde
-en chunked sans `Content-Length` :
+Reproduits sur banc local le 2026-08-19, avec l'image du sidecar épinglée,
+derrière un amont qui émet une ligne JSON par seconde en chunked sans
+`Content-Length`. Deux sont réglés en amont, **le deuxième ne l'est pas** :
 
-| # | défaut | correctif du chart |
+| # | défaut | où en est-on |
 |---|---|---|
-| 1 | `coraza-caddy` v1.2.2 bufferise sans consulter `responseBodyAccess` | `/v2` (initContainer `caddy-plugin-build`) |
-| 2 | `coraza-caddy` v2.5.0 ne propage aucun flush | patch d'une ligne, même initContainer |
-| 3 | `read_timeout 60s` du template amont coupe les flux silencieux | `read_timeout 0` (initContainer `caddy-template-patch`) |
+| 1 | `coraza-caddy` v1.2.2 bufferise sans consulter `responseBodyAccess` | ✅ réglé — l'image embarque `/v2` depuis le 2026-08-26 |
+| 2 | `coraza-caddy` v2.5.0 **et v2.6.0** ne propagent aucun flush | ❌ **ouvert en amont** ([#344](https://github.com/corazawaf/coraza-caddy/pull/344)) — patché ici en attendant |
+| 3 | `read_timeout 60s` du template amont coupe les flux silencieux | ✅ contourné par `read_timeout 0` (`caddy-template-patch`) |
 
 **1. La v1.2.2 ignore `responseBodyAccess`.** `stream.go` ne décide de laisser
 passer (`stream = true`) qu'à partir de `IsResponseBodyProcessable()`, donc du
@@ -423,10 +472,10 @@ rien. Pire, `coraza.go` ne recopie le tampon vers le client qu'**après** le
 retour de `next.ServeHTTP`, et le jette purement et simplement si celui-ci
 remonte une erreur : d'où les `size = 0` même sur des flux terminés.
 
-**2. La v2.5.0 ne propage aucun flush.** Le `/v2` corrige la phase 4 et rend
-`id:1003` opérante — vérifié : `p4=0` et `RESPONSE_BODY` vide sur une requête
-portant l'en-tête `Accept`, donc Coraza ne bufferise plus. Le flux reste pourtant
-bloqué, parce que `rwInterceptor.Flush()` fait :
+**2. Ni la v2.5.0 ni la v2.6.0 ne propagent de flush.** Le `/v2` corrige la
+phase 4 et rend `id:1003` opérante — vérifié : `p4=0` et `RESPONSE_BODY` vide
+sur une requête portant l'en-tête `Accept`, donc Coraza ne bufferise plus. Le
+flux reste pourtant bloqué, parce que `rwInterceptor.Flush()` fait :
 
 ```go
 if flusher, ok := i.w.(http.Flusher); ok {
@@ -455,6 +504,21 @@ bufferise pas. Le correctif est d'une ligne, et part en PR tel quel :
 `http.ResponseController` reconnaît `FlushError()`, `Flush()` et `Unwrap()` : il
 marche avec les ResponseWriter de `net/http` comme avec ceux de Caddy.
 
+C'est **exactement** le correctif de la PR
+[#344](https://github.com/corazawaf/coraza-caddy/pull/344) ouverte en amont le
+2026-08-26, qui y ajoute la recherche de `http.Hijacker` le long de la chaîne
+d'`Unwrap()` — nécessaire à partir de Caddy 2.11.5. Il n'y a donc rien à
+reverser : ce chart applique la même ligne sur une copie locale, en attendant la
+publication.
+
+> ⚠️ **v2.6.0 n'y change rien.** Elle réorganise `Flush()` (garde
+> `allowFlushing`, propagation conditionnée au flush des en-têtes) mais garde
+> l'assertion `i.w.(http.Flusher)`, seulement renommée `fl`. Mesuré le
+> 2026-08-27 : v2.6.0 vierge retient toujours tout le flux, y compris avec
+> `ctl:responseBodyAccess=Off` — donc hors de toute bufferisation par le WAF.
+> C'est aussi pourquoi l'ancre du patch diffère entre les deux versions du
+> module : la variable y est renommée `fl`.
+
 **3. Le template amont coupe les flux silencieux à 60 s.** Le `Caddyfile` de
 l'image pose `read_timeout ${PROXY_TIMEOUT}` (60 s par défaut) sur le transport
 du `reverse_proxy`, et Caddy réarme ce délai avant **chaque** lecture amont : un
@@ -467,13 +531,18 @@ injoignable échoue donc toujours vite.
 
 ### Résultats de banc
 
-| chaîne | flux JSON chunked | réponse courte |
-|---|---|---|
-| Caddy seul, sans `coraza_waf` | 1 ligne/s | ok |
-| image amont (v1.2.2) | **tout à la fin** | phases 3+5, `p4=0`, corps vide |
-| v2.5.0 seul (le `/v2`) | **tout à la fin** | phases 3+4+5, corps lu |
-| v2.5.0 + patch de flush | **1 ligne/s** | phases 3+4+5, corps lu |
-| + `read_timeout 0` | survit à 70 s de silence | inchangé |
+| chaîne | flux JSON chunked | réponse courte | WebSocket |
+|---|---|---|---|
+| Caddy seul, sans `coraza_waf` | 1 ligne/s | ok | ok |
+| ancienne image (v1.2.2) | **tout à la fin** | phases 3+5, `p4=0`, corps vide | ok |
+| image du 2026-08-26 (v2.5.0) | **tout à la fin** | phases 3+4+5, corps lu | **cassé** |
+| v2.6.0 vierge | **tout à la fin** | phases 3+4+5, corps lu | ok |
+| v2.6.0 + patch de flush | **1 ligne/s** | phases 3+4+5, corps lu | ok |
+| + `read_timeout 0` | survit à 70 s de silence | inchangé | inchangé |
+
+Les deux dernières lignes sont ce que le chart déploie. Mesures du 2026-08-19
+(les trois premières) et du 2026-08-27 (v2.6.0), lecture socket brute horodatée
+côté client — un client HTTP qui bufferise masque le résultat.
 
 ### Non-régression, à rejouer à chaque bump
 
@@ -494,10 +563,99 @@ la passe `internal`.
 
 ### Ce qui n'est pas concerné
 
-Les **WebSocket** passent, avant comme après : Caddy détourne la connexion
-(`Hijack`) et court-circuite tout le chemin de réponse bufferisé. Vérifié en
-cluster (430/430 sur `grafana…/api/live/ws`, octets délivrés). Le périmètre du
-défaut est la réponse HTTP en flux, pas l'upgrade.
+Le périmètre de ce défaut-ci est la réponse HTTP **en flux**. La bascule de
+protocole (WebSocket) emprunte un autre chemin dans le module, et souffre d'un
+défaut distinct — voir la section suivante.
+
+## WebSocket
+
+`coraza-caddy` v2.5.0 — la version qu'épingle l'image officielle — **casse les
+WebSocket**. Le chart s'en sort en construisant contre **v2.6.0**, où le défaut
+est corrigé en amont. Ce n'est donc pas un patch maison : celui qui avait été
+écrit ici a été jeté au profit du correctif amont, meilleur.
+
+### Symptôme
+
+À travers `coraza_waf`, un handshake WebSocket ne reçoit **jamais** sa ligne de
+statut : le client attend, puis expire. Aucune erreur côté Caddy, la requête
+apparaît normalement dans le log d'accès. Le même binaire, même configuration,
+sans la directive `coraza_waf`, sert le 101 immédiatement — et une requête HTTP
+ordinaire passe dans les deux cas. Le défaut est donc bien dans le module, sur
+le seul chemin de bascule.
+
+Mesuré sur banc, amont qui répond 101 puis détourne la connexion et échange des
+trames :
+
+| chaîne | handshake | trames |
+|---|---|---|
+| amont direct, sans WAF | 101 immédiat | échangées |
+| `coraza-caddy` v1.2.2 (ancienne image) | 101 immédiat | échangées |
+| **v2.5.0 (image officielle du 2026-08-26)** | **rien, timeout client** | — |
+| v2.5.0 + patch maison (écarté) | 101 immédiat | échangées |
+| **v2.6.0 vierge (ce que le chart déploie)** | 101 immédiat | échangées |
+
+### Cause
+
+`rwInterceptor.WriteHeader()` se contente d'**enregistrer** le statut. Il n'est
+écrit en aval qu'au premier `Write()` — à dessein : une règle de phase 4 doit
+pouvoir le remplacer par un 403 tant que rien n'est parti.
+
+Or sur une bascule de protocole, `reverse_proxy` appelle `WriteHeader(101)` puis
+détourne immédiatement la connexion (`Hijack`) pour pomper les octets dans les
+deux sens. Aucun `Write()` ne suivra jamais : le 101 meurt dans l'intercepteur.
+La v1.2.2 n'avait pas ce défaut — son `streamRecorder` écrit le statut en aval
+dès que le corps est jugé non inspectable, ce qui est le cas d'un 101.
+
+### Défaut générique, correctif amont
+
+Rien là-dedans ne tient à ce montage : ni au sandwich, ni à Traefik, ni au CRS.
+Tout `coraza_waf` devant un backend WebSocket, en `On` comme en `DetectionOnly`,
+tombe dessus. C'était donc à corriger en amont — et ça l'a été, indépendamment,
+par [corazawaf/coraza-caddy#262](https://github.com/corazawaf/coraza-caddy/pull/262)
+(« fix: support WebSocket connections when WAF is active »), livrée en **v2.6.0**
+le 2026-08-24.
+
+Le correctif amont va plus loin que celui que le chart portait :
+
+| | patch maison écarté | v2.6.0 |
+|---|---|---|
+| flush du 101 avant le `Hijack` | oui | oui |
+| détection du `Hijack` (`hijackerTracker`) | non | oui |
+| post-traitement sauté sur connexion détournée | non | oui |
+| `response.WriteHeader on hijacked connection` | subsiste dans les logs | supprimé |
+
+Le chart a donc **retiré son patch** et construit contre v2.6.0. Il n'y a rien à
+proposer en amont : le défaut y était déjà connu et réglé.
+
+### Ce que le WAF inspecte encore
+
+Le handshake est une **requête HTTP ordinaire** : URI, en-têtes, cookies, IP
+source. Les phases 1 et 2 s'exécutent en entier, le CRS aussi, et un refus rend
+un 403 au lieu du 101. Vérifié sur banc avec une règle piège en `deny` sur l'URI
+du handshake.
+
+Ce qui suit le 101 échappe au WAF. Ce n'est pas un arbitrage : après le `Hijack`
+la connexion n'est plus du HTTP, et le CRS n'a pas de règles de trames
+WebSocket. Ce que le WAF filtre sur ce trafic, c'est l'**accès à l'endpoint**.
+
+### Non-régression, à rejouer à chaque bump
+
+1. handshake WebSocket à travers le WAF → `101 Switching Protocols`, puis
+   trames échangées dans les deux sens ;
+2. règle piège en `deny` sur l'URI du handshake → 403, ce qui prouve que la
+   requête reste inspectée ;
+3. réponse HTTP courte → phases 3, 4 et 5, `RESPONSE_BODY` non vide : aucune
+   inspection n'est désarmée par la bascule ;
+4. le `grep -q hijackerTracker` de l'initContainer : si le tag cloné perdait le
+   correctif, le build échoue au lieu de livrer un WAF qui coupe les WebSocket.
+
+En cluster, un `curl` suffit à voir le handshake :
+
+```bash
+curl -sSi --http1.1 -m 10 -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  https://<host>/<chemin-ws> | head -1
+```
 
 ## Prise en compte des changements de configuration
 
@@ -655,11 +813,12 @@ de l'initContainer **et** son `grep -q` de garde. `initContainers` et
   de brute force sont inopérantes en pratique, même avec l'épinglage local,
   puisque plusieurs nœuds voient du trafic. Le scoring d'anomalie CRS est
   per-transaction, donc intact.
-- **Audit log** : les entrées `"transaction"` sont absentes avec l'image amont —
-  même cause que la phase 4, et même correctif (voir ci-dessus).
+- **Audit log** : les entrées `"transaction"` étaient absentes avec les images
+  d'avant le 2026-08-26 — même cause que la phase 4. Réglé en amont.
 - **Non testés** : gRPC, upload au-delà de `SecRequestBodyLimit`,
   renouvellement ACME réel, ajout d'un Ingress avec un nouveau host, kill du
-  sidecar. WebSocket et SSE, eux, sont mesurés — cf. § « Réponses en flux ».
+  sidecar. WebSocket et SSE, eux, sont mesurés sur banc — cf. § « Réponses en
+  flux » et § « WebSocket ».
 - **Réponses compressées** : si le client demande `gzip`, Caddy relaie la
   réponse compressée telle quelle et la phase 4 inspecte des octets compressés —
   les règles RESPONSE-95x sont aveugles sur ces réponses. **Mesuré** sur banc :

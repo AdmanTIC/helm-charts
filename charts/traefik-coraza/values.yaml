@@ -115,68 +115,77 @@ coraza:
     selector: {}
 
   # --- inspection des réponses (phase 4) -------------------------------------
-  # L'image amont `ghcr.io/coreruleset/coraza-crs:*-caddy-*` est construite avec
-  # `xcaddy build --with github.com/corazawaf/coraza-caddy` — SANS suffixe de
-  # version, donc Go résout le module v1 : coraza-caddy v1.2.2 (janvier 2023),
-  # sur un coraza v3 pré-release. Cette version n'appelle JAMAIS
-  # ProcessResponseBody() : la phase 4 ne s'exécute pas, RESPONSE_BODY reste
-  # vide et TOUTES les règles RESPONSE-95x du CRS sont inertes. Les entrées
-  # d'audit `"transaction"` manquent pour la même raison.
+  # ✅ RÉGLÉ EN AMONT. coreruleset/coraza-crs-docker#78 a été fusionnée le
+  # 2026-08-26 : `caddy/Dockerfile` déclare enfin `ARG CORAZA_VERSION` et
+  # construit `coraza-caddy/v2@${CORAZA_VERSION}`. L'image épinglée ci-dessous
+  # (tag `…-202608260808`, construite le 2026-08-26 à 21:30 UTC, donc APRÈS la
+  # fusion) embarque coraza-caddy/v2 v2.5.0 et coraza v3.7.0 — vérifié par
+  # `caddy build-info`. La phase 4 s'exécute, RESPONSE_BODY est lu, les entrées
+  # d'audit `"transaction"` sont produites.
   #
-  # Correctif proposé en amont : coreruleset/coraza-crs-docker#78. En attendant
-  # sa publication, l'initContainer `caddy-plugin-build` (plus bas) recompile le
-  # binaire Caddy avec coraza-caddy/v2 À CHAQUE DÉMARRAGE DE POD et le monte
-  # par-dessus /usr/bin/caddy. Aucune image à construire, publier, ni maintenir.
+  # Le même commit a retiré le `tag:'${CORAZA_TAG}'` des SecDefaultAction par
+  # défaut de l'image : la contournement par variables d'environnement du
+  # sidecar (plus bas) n'est plus nécessaire, il est conservé comme filet.
   #
-  # ⚠️ Ce n'est PAS gratuit, et c'est assumé comme provisoire :
+  # ⚠️ L'initContainer `caddy-plugin-build` reste néanmoins EN PLACE, mais pour
+  #    une autre raison, et une seule : la version que l'image épingle
+  #    (coraza-caddy v2.5.0) retient toutes les réponses en flux et casse les
+  #    WebSocket. Voir les deux sections suivantes. Le jour où l'image livrera
+  #    coraza-caddy >= v2.7.0 (une fois corazawaf/coraza-caddy#344 publiée),
+  #    l'initContainer, le volume `caddy-bin` et ses deux montages pourront
+  #    disparaître : README § « Le jour où l'image suffira ».
+  #
+  # ⚠️ Ce que coûte cet initContainer, tant qu'il est là :
   #    - le démarrage du pod est allongé de la compilation : ~2 min mesurées
   #      caches vides, 1 CPU, sur l'image builder officielle ;
   #    - le nœud doit joindre le proxy de modules Go au démarrage. Sans réseau,
   #      l'initContainer échoue et le pod ne démarre pas — donc plus d'ingress
   #      sur ce nœud. Échec bruyant, pas de WAF silencieusement désactivé ;
   #    - la compilation consomme CPU et mémoire au démarrage.
-  #    Voir README § « Inspection des réponses (phase 4) » pour le retour à une
-  #    image prête à l'emploi le jour où la correction amont est publiée.
 
-  # --- réponses en flux (SSE, grpc-gateway) : deux correctifs de plus --------
-  # Le `/v2` seul ne suffit PAS à faire ressortir une réponse en flux. Constaté
-  # en cluster — UI Argo CD figée, `DownstreamContentSize` à 0 o côté websecure
-  # sur 26 requêtes `/api/v1/stream/…` abouties en 200 — puis reproduit et
-  # corrigé sur banc local le 2026-08-19 (image amont, Caddy 2.11.3). Trois
-  # défauts indépendants, sur le même chemin :
+  # --- réponses en flux (SSE, grpc-gateway) : LA raison qui reste ------------
+  # C'est le SEUL défaut que l'image officielle ne corrige toujours pas, et donc
+  # la seule justification de l'initContainer de compilation. Constaté en
+  # cluster — UI Argo CD figée, `DownstreamContentSize` à 0 o côté websecure sur
+  # 26 requêtes `/api/v1/stream/…` abouties en 200 — puis reproduit sur banc.
+  # Trois défauts se superposaient à l'origine ; deux sont réglés :
   #
-  #  1. coraza-caddy v1.2.2 bufferise SANS consulter `responseBodyAccess` :
-  #     stream.go ne décide qu'à partir de IsResponseBodyProcessable(), donc du
-  #     seul Content-Type, et coraza.go ne recopie son tampon vers le client
-  #     qu'APRÈS la fin de la réponse amont — donc jamais pour un flux sans fin,
-  #     et jamais non plus si la réponse se termine en erreur. La règle id:1003
-  #     livrée ci-dessous (`ctl:responseBodyAccess=Off` sur
-  #     `Accept: text/event-stream`) ne protège donc RIEN en v1. Levé par le
-  #     `/v2` de l'initContainer `caddy-plugin-build`.
-  #  2. coraza-caddy v2.5.0 ne propage AUCUN flush : `rwInterceptor.Flush()`
-  #     teste `i.w.(http.Flusher)`, alors que Caddy n'implémente plus `Flush()`
-  #     sur ses ResponseWriter depuis 2.6.3 — `caddyhttp.responseRecorder`
-  #     expose `FlushError()`, `ResponseWriterWrapper` seulement `Unwrap()`.
-  #     L'assertion échoue TOUJOURS : tout flux traversant coraza_waf est retenu
-  #     jusqu'à la fin de la réponse, même quand le WAF ne le bufferise pas, et
-  #     le `flush_interval` de la ReverseProxy n'y change rien. Levé par le
-  #     patch `http.ResponseController` appliqué dans `caddy-plugin-build`.
-  #  3. le template amont pose `read_timeout ${PROXY_TIMEOUT}` (60 s par défaut)
-  #     sur le transport du reverse_proxy, et Caddy réarme ce délai avant CHAQUE
-  #     lecture amont : un flux silencieux plus de 60 s est coupé — « i/o
-  #     timeout » côté Caddy, comme observé en cluster. Levé par
-  #     `read_timeout 0`, injecté par `caddy-template-patch`.
+  #  1. ✅ coraza-caddy v1.2.2 bufferisait SANS consulter `responseBodyAccess`
+  #     (décision prise sur le seul Content-Type, tampon recopié après la fin de
+  #     la réponse amont — donc jamais pour un flux sans fin). La règle id:1003
+  #     livrée ci-dessous ne protégeait RIEN. Réglé : l'image embarque
+  #     désormais coraza-caddy/v2, id:1003 est honorée.
+  #  2. ❌ NON RÉGLÉ — coraza-caddy v2.5.0 ET v2.6.0 ne propagent AUCUN flush :
+  #     `rwInterceptor.Flush()` teste `i.w.(http.Flusher)`, alors que Caddy
+  #     n'implémente plus `Flush()` sur ses ResponseWriter depuis 2.6.3
+  #     (`caddyhttp.responseRecorder` expose `FlushError()`,
+  #     `ResponseWriterWrapper` seulement `Unwrap()`). L'assertion échoue
+  #     TOUJOURS : tout flux traversant coraza_waf est retenu jusqu'à la fin de
+  #     la réponse, même quand le WAF ne le bufferise pas, et le
+  #     `flush_interval` de la ReverseProxy n'y change rien.
+  #     Correctif amont EN COURS : corazawaf/coraza-caddy#344, ouverte le
+  #     2026-08-26, qui passe par `http.NewResponseController` — le même
+  #     correctif d'une ligne que celui appliqué ici. En attendant sa
+  #     publication, `caddy-plugin-build` l'applique sur une copie locale.
+  #  3. ✅ le template amont pose `read_timeout ${PROXY_TIMEOUT}` (60 s par
+  #     défaut) sur le transport du reverse_proxy, et Caddy réarme ce délai
+  #     avant CHAQUE lecture amont : un flux silencieux plus de 60 s est coupé —
+  #     « i/o timeout » côté Caddy, comme observé en cluster. Levé par
+  #     `read_timeout 0`, injecté par `caddy-template-patch` (le template amont
+  #     est inchangé dans la nouvelle image : vérifié par diff).
   #
   # Banc : amont émettant une ligne JSON par seconde, en chunked, sans
-  # Content-Length — la forme exacte des réponses grpc-gateway d'Argo CD.
+  # Content-Length — la forme exacte des réponses grpc-gateway d'Argo CD ;
+  # lecture socket brute horodatée côté client.
   #
-  #   | chaîne                          | flux          | réponse courte     |
-  #   |---------------------------------|---------------|--------------------|
-  #   | Caddy sans coraza_waf           | 1 ligne/s     | ok                 |
-  #   | amont v1.2.2                    | tout à la fin | p3+p5, p4=0        |
-  #   | v2.5.0 seul                     | tout à la fin | p3+p4+p5, corps lu |
-  #   | v2.5.0 + patch flush (ce chart) | 1 ligne/s     | p3+p4+p5, corps lu |
-  #   | + read_timeout 0                | survit à 70 s de silence            |
+  #   | chaîne                          | flux          | WebSocket |
+  #   |---------------------------------|---------------|-----------|
+  #   | Caddy sans coraza_waf           | 1 ligne/s     | ok        |
+  #   | v1.2.2 (ancienne image)         | tout à la fin | ok        |
+  #   | v2.5.0 (image officielle 08-26) | tout à la fin | CASSÉ     |
+  #   | v2.6.0 vierge                   | tout à la fin | ok        |
+  #   | v2.6.0 + patch flush (ce chart) | 1 ligne/s     | ok        |
+  #   | + read_timeout 0                | survit à 70 s de silence  |
   #
   # ⚠️ Le discriminant n'est PAS la nature SSE de la réponse. Argo CD répond
   #    `Content-Type: application/json` à un client qui demande
@@ -190,6 +199,40 @@ coraza:
   #    et inspecté : ces correctifs ne désarment aucune inspection. C'est le
   #    test de non-régression à rejouer à chaque bump de version — procédure
   #    dans README § « Réponses en flux ».
+
+  # --- bascule de protocole (WebSocket) --------------------------------------
+  # ✅ RÉGLÉ EN AMONT, par le choix de version ci-dessous. coraza-caddy v2.5.0 —
+  # celle qu'épingle l'image officielle — casse les WebSocket : le handshake ne
+  # reçoit jamais sa ligne de statut, le client attend puis expire.
+  # `rwInterceptor.WriteHeader()` se contente d'enregistrer le statut, il n'est
+  # écrit en aval qu'au premier `Write()` (pour laisser une phase 4 le
+  # remplacer) ; or sur un 101 `reverse_proxy` détourne la connexion (`Hijack`)
+  # juste après, aucun `Write()` ne suit jamais, et le 101 meurt dans
+  # l'intercepteur.
+  #
+  # corazawaf/coraza-caddy#262 (« fix: support WebSocket connections when WAF is
+  # active ») corrige exactement cela, et va plus loin que le patch que ce chart
+  # avait été écrit ici : un `hijackerTracker` marque la connexion détournée, ce qui
+  # évite en plus le « response.WriteHeader on hijacked connection » du
+  # post-traitement. Livré dans **v2.6.0** (2026-08-24) — d'où le choix de cette
+  # version dans `caddy-plugin-build`, plutôt que le v2.5.0 de l'image. Le patch
+  # maison a été retiré : il n'y a rien à reverser en amont, c'était un défaut
+  # générique, déjà corrigé là-bas.
+  #
+  # ⚠️ Le sens de la contrainte s'est inversé : ce n'est plus « /v2 casse les
+  #    WebSocket » mais « rester sur le v2.5.0 de l'image les casserait ».
+  #    Ne pas revenir en arrière sur la version du module sans rejouer le test.
+  #
+  # Ce qui reste inspecté, vérifié sur banc :
+  #   - le handshake est une requête HTTP ordinaire → phases 1 et 2 pleines
+  #     (règle piège en `deny` sur l'URI du handshake : 403 rendu) ;
+  #   - une réponse normale reste bufferisée et inspectée en phase 4 (règle
+  #     piège sur RESPONSE_BODY : 406 rendu) ;
+  #   - le flux d'une réponse SSE reste délivré au fil de l'eau (patch de
+  #     flush) ;
+  #   - le tunnel qui suit le 101 échappe au WAF. Ce n'est pas un choix : après
+  #     un Hijack la connexion n'est plus du HTTP, et le CRS n'a pas de règles
+  #     de trames WebSocket. Ce que le WAF filtre, c'est l'accès à l'endpoint.
 
   # --- directives Sec* poussées dans /opt/coraza/config.d/custom.conf ---------
   # ⚠️ YAML 1.1 (celui de Helm) résout `On`, `Off`, `Yes`, `No` NON QUOTÉS en
@@ -243,10 +286,10 @@ coraza:
       # ACME http-01 : ne jamais inspecter le challenge, cert-manager en dépend.
       acmeChallenge: true
       # WebSocket / gRPC / SSE : l'inspection de corps casse le streaming.
-      # Les WebSocket s'en sortiraient de toute façon — Caddy détourne la
-      # connexion et court-circuite le chemin de réponse. Pour une réponse HTTP
-      # en flux, ces `ctl:` n'ont d'effet qu'à partir de coraza-caddy v2 ET avec
-      # le patch de flush : cf. « réponses en flux » ci-dessus.
+      # Pour une réponse HTTP en flux, ces `ctl:` n'ont d'effet qu'à partir de
+      # coraza-caddy v2 ET avec le patch de flush : cf. « réponses en flux »
+      # ci-dessus. Pour les WebSocket, ils ne suffisent pas non plus : ce qui
+      # les débloque est coraza-caddy >= v2.6.0, cf. « bascule de protocole ».
       streamingProtocols: true
       # Sondes kubelet + Host numérique interne (neutralise 920350 sans le
       # désactiver pour l'externe, où un Host numérique reste un signal de scan).
@@ -439,7 +482,7 @@ traefik:
       # (kubectl logs … -c caddy-template-patch).
       - name: caddy-template-patch
         # ⚠️ MÊME TAG que l'autre conteneur (cf. en-tête du fichier).
-        image: ghcr.io/coreruleset/coraza-crs:4.28.0-caddy-alpine-202607180107
+        image: ghcr.io/coreruleset/coraza-crs:4.28.0-caddy-alpine-202608260808
         imagePullPolicy: IfNotPresent
         command: ["/bin/sh", "-c"]
         args:
@@ -502,28 +545,52 @@ traefik:
     # ancres amont ont bougé, autant le savoir avant d'attendre une compilation.
     #
     # Pourquoi compiler ici plutôt que publier une image :
-    #  - le correctif amont (coreruleset/coraza-crs-docker#78) tient en deux
-    #    lignes et sera publié ; monter une chaîne de build et un registre pour
-    #    une image jetable coûterait plus cher que ce contournement ;
+    #  - il ne reste qu'un patch d'une ligne à porter, déjà proposé en amont
+    #    (corazawaf/coraza-caddy#344) ; monter une chaîne de build et un
+    #    registre pour une image jetable coûterait plus cher ;
     #  - l'API de build officielle de Caddy (caddyserver.com/api/download) rend
     #    exactement ce binaire en quelques secondes, mais elle répond
     #    « Contact the Caddy team » aux agents automatisés. L'automatiser
     #    reviendrait à contourner une restriction délibérée : écartée.
     #
     # Deux épinglages, deux rôles :
-    #  - le tag de l'image builder fixe la version de Caddy produite, qui doit
-    #    rester alignée sur celle de l'image du sidecar (2.11.3) ;
-    #  - `v2.5.0` fixe la version de coraza-caddy.
+    #  - `v2.6.0` fixe la version de coraza-caddy — délibérément plus récente
+    #    que le `v2.5.0` de l'image, cf. § « bascule de protocole » ;
+    #  - le tag de l'image builder fixe la version de Caddy produite (2.11.4,
+    #    imposée par le go.mod de coraza-caddy v2.6.0).
     #
-    # Le module est cloné puis PATCHÉ avant compilation : v2.5.0 ne propage
-    # aucun flush au client, ce qui retient toute réponse en flux jusqu'à la fin
-    # de la réponse amont — le `/v2` seul ne suffit donc pas à ressusciter le SSE
-    # (cf. `coraza` § « réponses en flux » plus haut). Correctif d'une ligne,
-    # écrit pour partir en PR chez corazawaf/coraza-caddy tel quel.
+    # Ce que cet initContainer apporte encore, depuis que
+    # coreruleset/coraza-crs-docker#78 est fusionnée et que l'image officielle
+    # embarque coraza-caddy/v2 :
+    #  - la version du module. L'image épingle v2.5.0, qui CASSE les WebSocket ;
+    #    v2.6.0 les répare (corazawaf/coraza-caddy#262). Rien à patcher pour ça,
+    #    juste une version plus récente que celle de `docker-bake.hcl` amont.
+    #  - UN patch, le flush : ni v2.5.0 ni v2.6.0 ne propagent de flush au
+    #    client, donc toute réponse en flux est retenue jusqu'à la fin de la
+    #    réponse amont (SSE mort, cf. `coraza` § « réponses en flux »).
+    #    corazawaf/coraza-caddy#344 porte le même correctif en amont ; à sa
+    #    publication, cet initContainer n'aura plus de raison d'être.
+    # Le patch du statut 101 écrit ici a été JETÉ : v2.6.0 le fait mieux
+    # (hijackerTracker).
+    #
+    # ⚠️ NE PAS monter au-delà de Caddy 2.11.4 sans rejouer le test WebSocket.
+    #    caddyserver/caddy#7913 (attendu en 2.11.5) enveloppe tout
+    #    ResponseWriter dans un `IdleTimeoutWriter` qui n'expose plus que
+    #    `Unwrap()` : l'assertion `i.w.(http.Hijacker)` de coraza-caddy échouera
+    #    à son tour et les WebSocket recasseront. C'est l'autre moitié de
+    #    corazawaf/coraza-caddy#344, qui va chercher Hijacker le long de la
+    #    chaîne d'Unwrap. Tant qu'elle n'est pas publiée, le couple
+    #    (caddy 2.11.4, coraza-caddy v2.6.0 + patch de flush) est le seul
+    #    vérifié.
       - name: caddy-plugin-build
         # Image OFFICIELLE Caddy, variante builder : Go + xcaddy. Ce n'est pas
         # l'image du WAF, son tag suit la version de Caddy et non celle du CRS.
-        image: caddy:2.11.3-builder
+        # ⚠️ 2.11.4 et non 2.11.3 (la version de l'image du WAF) : coraza-caddy
+        #    v2.6.0 EXIGE caddy >= v2.11.4 dans son go.mod, et MVS l'emporte sur
+        #    le pin de xcaddy. Le binaire produit serait 2.11.4 quel que soit ce
+        #    tag ; autant que le tag dise la vérité. Le binaire remplaçant celui
+        #    de l'image, c'est lui qui compte à l'exécution.
+        image: caddy:2.11.4-builder
         imagePullPolicy: IfNotPresent
         command: ["/bin/sh", "-c"]
         args:
@@ -543,18 +610,24 @@ traefik:
             # capability est inutile ici : Caddy écoute sur 8090.
             export XCADDY_SETCAP=0
             # Source du module, épinglée. Un tag disparu casse le build.
-            git clone --quiet --depth 1 --branch v2.5.0 \
+            # v2.6.0, PAS le v2.5.0 de l'image : c'est cette version qui répare
+            # les WebSocket (hijackerTracker + flush du 101).
+            git clone --quiet --depth 1 --branch v2.6.0 \
                 https://github.com/corazawaf/coraza-caddy /tmp/build/src/coraza-caddy
             cd /tmp/build/src/coraza-caddy
-            # Patch du flush. `rwInterceptor.Flush()` teste `i.w.(http.Flusher)`,
-            # que Caddy n'implémente plus depuis 2.6.3 (le recorder expose
-            # FlushError(), les wrappers Unwrap()) : l'assertion échoue toujours
-            # et aucun flush n'atteint le client. http.ResponseController
-            # reconnaît les trois formes.
+            # Un seul patch : le flush. `rwInterceptor.Flush()` teste
+            # `i.w.(http.Flusher)`, que Caddy n'implémente plus depuis 2.6.3
+            # (le recorder expose FlushError(), les wrappers Unwrap()) :
+            # l'assertion échoue toujours et aucun flush n'atteint le client.
+            # http.ResponseController reconnaît les trois formes.
+            # ⚠️ Le nom de la variable a changé entre v2.5.0 (`flusher`) et
+            #    v2.6.0 (`fl`), et l'indentation est passée à trois niveaux :
+            #    l'ancre suit v2.6.0. La garde de sortie plus bas transforme
+            #    tout écart en échec de build.
             awk '
-              /if flusher, ok := i\.w\.\(http\.Flusher\); ok \{/ {
-                print "\t//nolint:errcheck"
-                print "\thttp.NewResponseController(i.w).Flush()"
+              /if fl, ok := i\.w\.\(http\.Flusher\); ok \{/ {
+                print "\t\t\t//nolint:errcheck"
+                print "\t\t\thttp.NewResponseController(i.w).Flush()"
                 skip = 2
                 next
               }
@@ -566,16 +639,20 @@ traefik:
             # que binaire silencieusement non corrigé.
             grep -q 'NewResponseController(i.w).Flush()' interceptor.go
             ! grep -q 'i.w.(http.Flusher)' interceptor.go
+            # Le correctif WebSocket doit venir de la version clonée, pas de
+            # nous : si ce marqueur disparaît, c'est que le tag ne le contient
+            # pas et les WebSocket casseraient en silence.
+            grep -q 'hijackerTracker' interceptor.go
             cd /
-            xcaddy build --with github.com/corazawaf/coraza-caddy/v2@v2.5.0=/tmp/build/src/coraza-caddy \
+            xcaddy build --with github.com/corazawaf/coraza-caddy/v2@v2.6.0=/tmp/build/src/coraza-caddy \
                          --output /work/caddy
             # Garde de sortie : sans le suffixe /v2, Go résoudrait le module v1
-            # SANS erreur, et on repartirait pour une phase 4 morte. C'est
-            # exactement le piège dans lequel l'image amont est tombée.
+            # SANS erreur, et on repartirait pour une phase 4 morte. C'est le
+            # piège dans lequel l'image amont était tombée jusqu'au 2026-08-26.
             /work/caddy build-info | grep -q 'coraza-caddy/v2' \
               || { echo "!! binaire construit sans coraza-caddy/v2" >&2; exit 1; }
-            # Et le patch doit être dans le binaire : avec un remplacement local
-            # build-info affiche une ligne `=> /tmp/build/src/coraza-caddy`.
+            # Et le patch doit être dans le binaire : avec un remplacement
+            # local build-info affiche une ligne `=> /tmp/build/src/coraza-caddy`.
             /work/caddy build-info | grep -q '=>.*coraza-caddy' \
               || { echo "!! binaire construit sans le patch de flush" >&2; exit 1; }
             /work/caddy build-info | grep -iE 'coraza|=>'
@@ -605,7 +682,7 @@ traefik:
       # (kubectl logs … -c coraza).
       - name: coraza
         # ⚠️ MÊME TAG que l'autre conteneur (cf. en-tête du fichier).
-        image: ghcr.io/coreruleset/coraza-crs:4.28.0-caddy-alpine-202607180107
+        image: ghcr.io/coreruleset/coraza-crs:4.28.0-caddy-alpine-202608260808
         imagePullPolicy: IfNotPresent
         ports:
           - name: coraza
@@ -620,12 +697,14 @@ traefik:
           # fichier, pas stdout. Sans ça le log d'accès est introuvable.
           - name: ACCESSLOG
             value: "/dev/stdout"
-          # `tag:` est une action de métadonnée : les versions récentes de coraza
-          # la refusent dans SecDefaultAction et le sidecar ne démarre pas
-          # (« SecDefaultAction must not contain metadata actions »). L'image
-          # injecte pourtant `tag:coraza` par défaut dans crs-setup.conf.
-          # Sans effet sur le binaire amont v1.2.2, indispensable dès qu'on
-          # reconstruit avec coraza-caddy/v2. Constaté en local.
+          # `tag:` est une action de métadonnée : les versions récentes de
+          # coraza la refusent dans SecDefaultAction et le sidecar ne démarre
+          # pas (« SecDefaultAction must not contain metadata actions »).
+          # L'image l'injectait par défaut dans crs-setup.conf ; le commit qui a
+          # fusionné coreruleset/coraza-crs-docker#78 l'a retiré, ces deux
+          # variables valent donc désormais exactement le défaut de l'image.
+          # CONSERVÉES comme filet : elles redeviennent indispensables si l'on
+          # repique un tag antérieur au 2026-08-26.
           - { name: CORAZA_DEFAULT_PHASE1_ACTION, value: "phase:1,pass,log" }
           - { name: CORAZA_DEFAULT_PHASE2_ACTION, value: "phase:2,pass,log" }
           # Réglage de la paranoïa : ces variables agissent par `sed` sur
@@ -637,8 +716,9 @@ traefik:
           # - { name: ANOMALY_INBOUND,   value: "5" }
           # - { name: ANOMALY_OUTBOUND,  value: "4" }
         volumeMounts:
-          # Binaire recompilé avec coraza-caddy/v2, par-dessus celui de
-          # l'image. `subPath` monte le seul fichier, sans masquer /usr/bin.
+          # Binaire recompilé (coraza-caddy v2.6.0 + patch de flush), par-dessus
+          # celui de l'image. `subPath` monte le seul fichier, sans masquer
+          # /usr/bin.
           # Corollaire : la file capability cap_net_bind_service du binaire de
           # l'image disparaît — sans conséquence, Caddy écoute sur 8090, et
           # NET_BIND_SERVICE plus bas reste nécessaire si l'on retire ce montage.

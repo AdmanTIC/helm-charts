@@ -82,6 +82,11 @@ data:
     #    réponse, et ces trois règles ne protègent rien. Et même en v2, il faut
     #    le patch de flush du chart pour que les octets ressortent au fil de
     #    l'eau. Voir values.yaml § « réponses en flux ».
+    # ⚠️ id:1001 ne suffit PAS à faire marcher les WebSocket : après le 101 la
+    #    connexion est détournée, elle ne passe plus par le chemin de réponse
+    #    du module. Ce qui les débloque est coraza-caddy >= v2.6.0, la version
+    #    que construit `caddy-plugin-build`. La règle reste utile pour le corps
+    #    de la REQUÊTE de handshake. Voir values.yaml § « bascule de protocole ».
     SecRule REQUEST_HEADERS:Upgrade "@streq websocket" \
       "id:1001,phase:1,pass,nolog,ctl:requestBodyAccess=Off,ctl:responseBodyAccess=Off"
     SecRule REQUEST_HEADERS:Content-Type "@beginsWith application/grpc" \
