@@ -1,0 +1,146 @@
+{{- if .Values.calicoBouncer.enabled }}
+{{- $csFullname := ternary .Release.Name (printf "%s-crowdsec" .Release.Name) (contains "crowdsec" .Release.Name) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-calico-bouncer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "calicoBouncer.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.calicoBouncer.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "calicoBouncer.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "calicoBouncer.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Force a rollout when the script changes.
+        checksum/script: {{ .Files.Get "files/calico-bouncer/bouncer.py" | sha256sum }}
+        {{- with .Values.calicoBouncer.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}-calico-bouncer
+      {{- with .Values.calicoBouncer.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.calicoBouncer.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: bouncer
+          image: "{{ .Values.calicoBouncer.image.repository }}:{{ .Values.calicoBouncer.image.tag }}"
+          imagePullPolicy: {{ .Values.calicoBouncer.image.pullPolicy }}
+          {{- with .Values.calicoBouncer.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              # Install runtime deps into a writable directory (compatible with
+              # readOnlyRootFilesystem when /home/app is an emptyDir).
+              echo "[bouncer] installing python deps..."
+              pip install --no-cache-dir --quiet --target /home/app/pylibs \
+                requests=={{ .Values.calicoBouncer.pythonDeps.requestsVersion }} \
+                kubernetes=={{ .Values.calicoBouncer.pythonDeps.kubernetesVersion }}
+              export PYTHONPATH=/home/app/pylibs:${PYTHONPATH:-}
+              echo "[bouncer] starting..."
+              exec python /scripts/bouncer.py
+          env:
+            - name: LAPI_URL
+              value: {{ printf "http://%s-service:8080" $csFullname | quote }}
+            - name: LAPI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: crowdsec-calico-bouncer-secret
+                  key: apiKey
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: IDENTITY
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POLL_INTERVAL_SECONDS
+              value: {{ .Values.calicoBouncer.pollIntervalSeconds | quote }}
+            - name: BACKOFF_MAX_SECONDS
+              value: {{ .Values.calicoBouncer.backoffMaxSeconds | quote }}
+            - name: LEASE_NAME
+              value: {{ .Values.calicoBouncer.leaderElection.leaseName | quote }}
+            - name: LEASE_DURATION_SECONDS
+              value: {{ .Values.calicoBouncer.leaderElection.leaseDurationSeconds | quote }}
+            - name: LEASE_RENEW_INTERVAL
+              value: {{ .Values.calicoBouncer.leaderElection.renewInterval | quote }}
+            - name: GNP_NAME
+              value: {{ .Values.calicoBouncer.policy.name | quote }}
+            - name: GNP_SELECTOR
+              value: {{ .Values.calicoBouncer.policy.selector | quote }}
+            - name: GNP_TYPES
+              value: {{ .Values.calicoBouncer.policy.types | join "," | quote }}
+            - name: GNP_PRE_DNAT
+              value: {{ .Values.calicoBouncer.policy.preDNAT | quote }}
+            - name: GNP_APPLY_ON_FORWARD
+              value: {{ .Values.calicoBouncer.policy.applyOnForward | quote }}
+            - name: GNP_DO_NOT_TRACK
+              value: {{ .Values.calicoBouncer.policy.doNotTrack | quote }}
+            - name: GNP_ORDER
+              value: {{ .Values.calicoBouncer.policy.order | quote }}
+            - name: ACT_ON_TYPES
+              value: {{ .Values.calicoBouncer.actOnTypes | join "," | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.calicoBouncer.logLevel | quote }}
+            {{- with .Values.calicoBouncer.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+            - name: home
+              mountPath: /home/app
+            - name: tmp
+              mountPath: /tmp
+          {{- with .Values.calicoBouncer.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.calicoBouncer.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: script
+          configMap:
+            name: {{ .Release.Name }}-calico-bouncer-script
+            defaultMode: 0o555
+        - name: home
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.calicoBouncer.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.calicoBouncer.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.calicoBouncer.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

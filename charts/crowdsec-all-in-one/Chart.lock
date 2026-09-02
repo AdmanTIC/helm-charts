@@ -1,0 +1,12 @@
+dependencies:
+- name: crowdsec
+  repository: https://crowdsecurity.github.io/helm-charts
+  version: 0.24.0
+- name: postgres
+  repository: oci://ghcr.io/cloudpirates-io/helm-charts
+  version: 0.20.2
+- name: pgbouncer
+  repository: oci://ghcr.io/icoretech/charts
+  version: 4.1.9
+digest: sha256:09d7aa86962bb08ced71d422ff85bd9942f6936be20b01054efb08c924de7142
+generated: "2026-08-29T14:46:31.876254+02:00"

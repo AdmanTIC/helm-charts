@@ -1,0 +1,54 @@
+{{- if .Values.webui.ingressRoute.enabled -}}
+{{- $fullName := include "crowdsec-all-in-one.fullname" . -}}
+{{- $svcPort  := .Values.webui.service.port -}}
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ $fullName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crowdsec-all-in-one.labels" . | nindent 4 }}
+  {{- with .Values.webui.ingressRoute.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.webui.ingressRoute.entryPoints }}
+  entryPoints:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  routes:
+    {{- range .Values.webui.ingressRoute.routes }}
+    - match: {{ .match | quote }}
+      kind: {{ default "Rule" .kind }}
+      {{- with .middlewares }}
+      middlewares:
+        {{- range . }}
+        - name: {{ .name }}
+          {{- with .namespace }}
+          namespace: {{ . }}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+      services:
+        - name: {{ $fullName }}
+          port: {{ $svcPort }}
+    {{- end }}
+  {{- if .Values.webui.ingressRoute.tls.enabled }}
+  tls:
+    {{- with .Values.webui.ingressRoute.tls.secretName }}
+    secretName: {{ . }}
+    {{- end }}
+    {{- with .Values.webui.ingressRoute.tls.certResolver }}
+    certResolver: {{ . }}
+    {{- end }}
+    {{- with .Values.webui.ingressRoute.tls.domains }}
+    domains:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .Values.webui.ingressRoute.tls.options }}
+    options:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+  {{- end }}
+{{- end }}

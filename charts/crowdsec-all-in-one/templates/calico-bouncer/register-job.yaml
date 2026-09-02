@@ -1,0 +1,97 @@
+{{- if and .Values.calicoBouncer.enabled .Values.calicoBouncer.registerJob.enabled }}
+# Registers the calico-bouncer in the LAPI `bouncers` table so its API key is
+# accepted. The key is stored hashed (sha512, hex) — pgcrypto provides digest().
+# Idempotent via ON CONFLICT, so re-running this job after rotating the secret
+# (delete + recreate) updates the hash in place.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-register-calico-bouncer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "calicoBouncer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: register-calico-bouncer
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "3"
+    "helm.sh/hook-delete-policy": before-hook-creation
+    "argocd.argoproj.io/hook": PostSync
+    "argocd.argoproj.io/sync-wave": "3"
+    "argocd.argoproj.io/hook-delete-policy": BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 5
+  template:
+    metadata:
+      labels:
+        {{- include "calicoBouncer.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: register-calico-bouncer
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsUser: 0
+      containers:
+        - name: register
+          image: "{{ .Values.webui.registerJob.image.repository }}:{{ .Values.webui.registerJob.image.tag }}"
+          imagePullPolicy: {{ .Values.webui.registerJob.image.pullPolicy }}
+          env:
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: crowdsec-secrets
+                  key: crowdsecUsername
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: crowdsec-secrets
+                  key: crowdsecPassword
+            - name: DB_NAME
+              value: crowdsec
+            - name: DB_HOST
+              value: crowdsec-pgbouncer
+            - name: BOUNCER_NAME
+              value: {{ .Values.calicoBouncer.bouncerName | quote }}
+            - name: BOUNCER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: crowdsec-calico-bouncer-secret
+                  key: apiKey
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+
+              echo "[register-calico-bouncer] Waiting for PostgreSQL..."
+              until timeout 5 psql -h "$DB_HOST" -p 5432 -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1" > /dev/null 2>&1; do
+                echo "[register-calico-bouncer] PostgreSQL not ready, retrying in 3s..."
+                sleep 3
+              done
+
+              echo "[register-calico-bouncer] Waiting for CrowdSec schema (bouncers table)..."
+              until psql -h "$DB_HOST" -p 5432 -U "$DB_USER" -d "$DB_NAME" \
+                -c "SELECT 1 FROM bouncers LIMIT 1" > /dev/null 2>&1; do
+                echo "[register-calico-bouncer] schema not ready, retrying in 3s..."
+                sleep 3
+              done
+
+              # pgcrypto (digest()) — idempotent, needed on pre-existing DBs
+              # where initdb.scripts never ran. Trusted extension since PG13,
+              # so the DB owner can CREATE it.
+              echo "[register-calico-bouncer] Ensuring pgcrypto extension..."
+              psql -h "$DB_HOST" -p 5432 -U "$DB_USER" -d "$DB_NAME" \
+                -v ON_ERROR_STOP=1 \
+                -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+
+              # SQL escape (PostgreSQL: '' is the escaped single quote).
+              SAFE_NAME=$(printf '%s' "$BOUNCER_NAME"    | sed "s/'/''/g")
+              SAFE_KEY=$(printf  '%s' "$BOUNCER_API_KEY" | sed "s/'/''/g")
+
+              echo "[register-calico-bouncer] Registering bouncer '${BOUNCER_NAME}'..."
+              # api_key stored as hex(sha512(plaintext)) — matches cscli bouncers add.
+              printf "INSERT INTO bouncers (created_at, updated_at, name, api_key, revoked, ip_address, type, version, auth_type) VALUES (NOW(), NOW(), '%s', encode(digest('%s', 'sha512'), 'hex'), false, '', 'calico', '', 'api-key') ON CONFLICT (name) DO UPDATE SET api_key = encode(digest('%s', 'sha512'), 'hex'), revoked = false, updated_at = NOW();" \
+                "$SAFE_NAME" "$SAFE_KEY" "$SAFE_KEY" \
+                | psql -h "$DB_HOST" -p 5432 -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1
+
+              echo "[register-calico-bouncer] Done."
+{{- end }}

@@ -1,0 +1,31 @@
+{{- if and .Values.calicoBouncer.enabled .Values.calicoBouncer.hostEndpoints.manage }}
+{{- range .Values.calicoBouncer.hostEndpoints.entries }}
+---
+apiVersion: crd.projectcalico.org/v1
+kind: HostEndpoint
+metadata:
+  name: {{ .name }}
+  labels:
+    app.kubernetes.io/managed-by: crowdsec-calico-bouncer
+    {{- /* The label the GNP selector matches on. */}}
+    {{- with $.Values.calicoBouncer.hostEndpoints.protectedLabel }}
+    {{ .key }}: {{ .value | quote }}
+    {{- end }}
+    {{- with .labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  node: {{ .node }}
+  {{- with .interfaceName }}
+  interfaceName: {{ . | quote }}
+  {{- end }}
+  {{- with .expectedIPs }}
+  expectedIPs:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .profiles }}
+  profiles:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}

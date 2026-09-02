@@ -1,0 +1,30 @@
+{{- if .Values.agentDataPvc.enabled }}
+# PVC dedie aux fichiers de donnees des scenarios CrowdSec
+# (ex: log4j2_cve_2021_44228.txt, listes IP, etc.) telecharges par
+# `cscli collections install`.
+#
+# Monte a /var/lib/crowdsec/data (chemin par defaut de config_paths.data_dir)
+# dans :
+#   - le job install-collections  : cscli ecrit les fichiers ici
+#   - le DaemonSet agent          : via crowdsec.agent.extraVolumeMounts
+#
+# Sans cette PVC, /var/lib/crowdsec/data est ephemere → erreurs
+# "file 'log4j2_cve_2021_44228.txt' not found in expr library" apres restart.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: crowdsec-agent-data-pvc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crowdsec-all-in-one.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent-data
+spec:
+  accessModes:
+    {{- toYaml .Values.agentDataPvc.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.agentDataPvc.size }}
+  {{- with .Values.agentDataPvc.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}

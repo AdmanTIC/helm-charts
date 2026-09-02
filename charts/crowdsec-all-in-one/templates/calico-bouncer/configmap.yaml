@@ -1,0 +1,12 @@
+{{- if .Values.calicoBouncer.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-calico-bouncer-script
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "calicoBouncer.labels" . | nindent 4 }}
+data:
+  bouncer.py: |
+{{ .Files.Get "files/calico-bouncer/bouncer.py" | indent 4 }}
+{{- end }}

@@ -1,0 +1,110 @@
+{{- if .Values.collectionsJob.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "crowdsec-all-in-one.fullname" . }}-install-collections
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crowdsec-all-in-one.labels" . | nindent 4 }}
+    app.kubernetes.io/component: install-collections
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+    "argocd.argoproj.io/hook": PostSync
+    "argocd.argoproj.io/sync-wave": "0"
+    "argocd.argoproj.io/hook-delete-policy": BeforeHookCreation
+    # Jobs sont immutables côté K8s → Force+Replace demande à ArgoCD
+    # d'utiliser `kubectl replace --force` (delete+recreate atomique) au lieu
+    # de `apply`, seul moyen fiable de re-créer un Job dont le spec change.
+    "argocd.argoproj.io/sync-options": Force=true,Replace=true
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "crowdsec-all-in-one.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: install-collections
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsUser: 0
+      volumes:
+        - name: crowdsec-config
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-agent-config-pvc
+        {{- if .Values.agentDataPvc.enabled }}
+        - name: crowdsec-agent-data
+          persistentVolumeClaim:
+            claimName: crowdsec-agent-data-pvc
+        {{- end }}
+      containers:
+        - name: install-collections
+          image: "{{ .Values.crowdsec.image.repository | default "crowdsecurity/crowdsec" }}:{{ .Values.crowdsec.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.crowdsec.image.pullPolicy | default "IfNotPresent" }}
+          volumeMounts:
+            - name: crowdsec-config
+              mountPath: /etc/crowdsec_data
+            {{- if .Values.agentDataPvc.enabled }}
+            - name: crowdsec-agent-data
+              mountPath: /var/lib/crowdsec/data
+            {{- end }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+
+              # -- 1. Attendre que l'agent ait initialise le PVC -------------------
+              # docker_start.sh (agent) genere config.yaml dans le PVC au 1er
+              # demarrage. On attend qu'il soit present avant de continuer.
+              echo "[install-collections] Waiting for agent to initialize config PVC..."
+              until [ -f /etc/crowdsec_data/config.yaml ]; do
+                echo "[install-collections] config.yaml not found yet, retrying in 5s..."
+                sleep 5
+              done
+              echo "[install-collections] config.yaml found."
+
+              # -- 2. Symlink /etc/crowdsec -> /etc/crowdsec_data ------------------
+              # Identique a ce que fait le conteneur principal de l'agent.
+              # Si /etc/crowdsec existe comme repertoire dans l'image, le supprimer
+              # d'abord (overlay du conteneur uniquement, sans impact sur le PVC).
+              if [ -e /etc/crowdsec ] && [ ! -L /etc/crowdsec ]; then
+                rm -rf /etc/crowdsec
+              fi
+              ln -s /etc/crowdsec_data /etc/crowdsec
+
+              {{- if .Values.agentDataPvc.enabled }}
+              # -- 3. Reset data_dir au defaut /var/lib/crowdsec/data --------------
+              # Les fichiers de donnees vont dans le PVC dedie crowdsec-agent-data
+              # (monte a /var/lib/crowdsec/data). On annule le patch eventuel des
+              # versions precedentes du chart (qui redirigeait vers /etc/crowdsec/data).
+              yq e '.config_paths.data_dir = "/var/lib/crowdsec/data/"' \
+                -i /etc/crowdsec/config.yaml
+              echo "[install-collections] data_dir: $(yq e '.config_paths.data_dir' /etc/crowdsec/config.yaml)"
+              {{- else }}
+              # -- 3. Sans PVC data dedie : data_dir reste celui de l'image --------
+              # ATTENTION : /var/lib/crowdsec/data est alors ephemere -> les fichiers
+              # de donnees seront perdus a chaque restart du pod agent. Pour eviter
+              # ce risque, activer agentDataPvc.enabled = true dans les values.
+              echo "[install-collections] WARNING: agentDataPvc disabled — data files will not persist."
+              {{- end }}
+
+              # -- 4. Install hub content ------------------------------------------
+              echo "[install-collections] Updating hub index..."
+              cscli hub update
+              {{- if .Values.collectionsJob.collections }}
+              echo "[install-collections] Installing collections: {{ .Values.collectionsJob.collections | join ", " }}"
+              cscli collections install {{ .Values.collectionsJob.collections | join " " }}
+              {{- end }}
+              {{- if .Values.collectionsJob.parsers }}
+              echo "[install-collections] Installing parsers: {{ .Values.collectionsJob.parsers | join ", " }}"
+              cscli parsers install {{ .Values.collectionsJob.parsers | join " " }}
+              {{- end }}
+              {{- if .Values.collectionsJob.postoverflows }}
+              echo "[install-collections] Installing postoverflows: {{ .Values.collectionsJob.postoverflows | join ", " }}"
+              cscli postoverflows install {{ .Values.collectionsJob.postoverflows | join " " }}
+              {{- end }}
+              echo "[install-collections] Done."
+{{- end }}

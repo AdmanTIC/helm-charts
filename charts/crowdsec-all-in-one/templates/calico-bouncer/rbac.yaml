@@ -1,0 +1,63 @@
+{{- if .Values.calicoBouncer.enabled }}
+# Calico CRDs are cluster-scoped → ClusterRole.
+# The Lease used for leader election lives in the release namespace → Role.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-calico-bouncer
+  labels:
+    {{- include "calicoBouncer.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["crd.projectcalico.org"]
+    resources: ["globalnetworkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  {{- if .Values.calicoBouncer.hostEndpoints.manage }}
+  - apiGroups: ["crd.projectcalico.org"]
+    resources: ["hostendpoints"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-calico-bouncer
+  labels:
+    {{- include "calicoBouncer.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Name }}-calico-bouncer
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-calico-bouncer
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-calico-bouncer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "calicoBouncer.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-calico-bouncer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "calicoBouncer.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-calico-bouncer
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-calico-bouncer
+    namespace: {{ .Release.Namespace }}
+{{- end }}

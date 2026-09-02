@@ -1,0 +1,1283 @@
+# =============================================================================
+#  crowdsec-all-in-one — values.yaml
+# =============================================================================
+#
+# Stack complète CrowdSec packagée pour Kubernetes :
+#
+#   ┌─────────────┐    ┌──────────┐    ┌──────────┐    ┌────────────┐
+#   │   agent     │───▶│   LAPI   │───▶│ PgBouncer│───▶│ PostgreSQL │
+#   │ (DaemonSet) │    │ (Deploy) │    │ (Deploy) │    │  (Deploy)  │
+#   └─────────────┘    └──────────┘    └──────────┘    └────────────┘
+#                            ▲
+#                            │
+#                      ┌──────────┐
+#                      │  WebUI   │  ◀── ingress / HTTPRoute
+#                      │ (Deploy) │
+#                      └──────────┘
+#
+# Sub-charts (cf. Chart.yaml) :
+#   • crowdsec   (officiel)             → agent DaemonSet + LAPI Deployment
+#   • postgres   (cloudpirates)         → base de données
+#   • pgbouncer  (icoretech)            → pool de connexions devant Postgres
+#
+# Templates locaux du chart parent (charts/crowdsec-all-in-one/templates/) :
+#   • crowdsec-secrets.yaml             → Secret unique (creds DB, webui, pgbouncer)
+#   • webui/                            → Deployment / Service / Ingress / PVC du WebUI
+#   • install-collections-job.yaml      → Hook PostSync (wave 0) : cscli hub update
+#   • restart-agent-job.yaml            → Hook PostSync (wave 5) : kubectl rollout
+#   • register-job.yaml                 → Hook PostSync : crée la machine WebUI en BDD
+#   • agent-data-pvc.yaml               → PVC pour /var/lib/crowdsec/data
+#   • network-policy.yaml               → NetworkPolicy unique pour le namespace
+#
+# Trois PVCs sont créées au déploiement :
+#   1. {release}-lapi-config-pvc        → config.yaml du LAPI                (RWX, 1Gi)
+#   2. {release}-agent-config-pvc       → config.yaml + hub content de l'agent (RWX, 1Gi)
+#   3. crowdsec-agent-data-pvc          → data files (.txt utilisés par scenarios) (RWX, 1Gi)
+#
+# =============================================================================
+#  CrowdSec (sub-chart) — LAPI + agent
+# =============================================================================
+# Doc upstream : https://github.com/crowdsecurity/helm-charts/blob/main/charts/crowdsec/values.yaml
+crowdsec:
+  # Runtime conteneur du cluster — sert à la collecte des logs depuis les pods.
+  # Valeurs possibles : containerd | docker | cri-o.
+  container_runtime: containerd
+
+  # ---------------------------------------------------------------------------
+  # LAPI secrets — délégation au chart parent
+  # ---------------------------------------------------------------------------
+  # Le sub-chart officiel génère `crowdsec-lapi-secrets` (csLapiSecret +
+  # registrationToken) via `randAscii 64` / `randAlphaNum 48` avec fallback
+  # `lookup`. Or `lookup` retourne nil en `helm template` (mode ArgoCD),
+  # donc à chaque sync les valeurs seraient rerandomisées → LAPI rolling
+  # perpétuel, main Sync jamais Healthy, PostSync hooks jamais déclenchés.
+  #
+  # On délègue la génération au chart parent (templates/crowdsec-lapi-secrets.yaml)
+  # qui produit des valeurs déterministes stables entre chaque render.
+  # secrets.externalSecret.name est le hook officiel du sub-chart pour skipper
+  # sa propre génération.
+  secrets:
+    externalSecret:
+      name: crowdsec-lapi-secrets
+      # Clés par défaut, laissées vides → sub-chart utilise csLapiSecret /
+      # registrationToken (cf. helpers `lapi.csLapiSecretKey` /
+      # `lapi.registrationTokenKey`).
+      csLapiSecretKey: ""
+      registrationTokenKey: ""
+
+  # ---------------------------------------------------------------------------
+  # AppSec (WAF)
+  # ---------------------------------------------------------------------------
+  # CrowdSec expose un module optionnel AppSec (Web Application Firewall)
+  # basé sur Coraza + OWASP CRS. On garde ce chart focalisé sur l'analyse de
+  # logs (parsers/scenarios/decisions) → WAF DÉSACTIVÉ explicitement.
+  #
+  # C'est déjà le défaut du sub-chart mais on le fige ici pour éviter
+  # qu'un futur bump upstream ne l'active accidentellement. Aucun Deployment
+  # AppSec, aucun Service 7422, aucun ConfigMap appsec-* ne sera généré.
+  #
+  # Pour activer un jour : passer `enabled: true` et configurer
+  # `appsec.acquisitions`, `appsec.configs`, `appsec.rules`
+  # (cf. https://docs.crowdsec.net/docs/appsec/intro).
+  appsec:
+    enabled: false
+
+  # ---------------------------------------------------------------------------
+  # LAPI (Local API)
+  # ---------------------------------------------------------------------------
+  # Composant central : reçoit les alertes des agents, persiste alertes/décisions
+  # en BDD, expose l'API HTTP (port 8080) pour bouncers + WebUI.
+  lapi:
+    # Stateless avec BDD externe → multi-replicas safe si besoin de HA.
+    replicas: 1
+    strategy:
+      rollingUpdate:
+        maxSurge: 25%
+        maxUnavailable: 25%
+      type: RollingUpdate
+
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: ~
+        memory: 384Mi
+
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: lapi
+              topologyKey: kubernetes.io/hostname
+
+    persistentVolume:
+      # PVC RWX pour /etc/crowdsec (config.yaml, profiles.yaml, hub local…).
+      # RWX → permet le partage si replicas > 1.
+      config:
+        enabled: true
+        accessModes: ["ReadWriteMany"]
+        size: 1Gi
+      # data PVC désactivée : la BDD persiste tout (alertes/décisions) côté Postgres,
+      # donc /var/lib/crowdsec/data du LAPI peut être éphémère.
+      data:
+        enabled: false
+
+    # Variables d'env injectées dans le conteneur LAPI.
+    # Interpolées par docker_start.sh dans config.yaml.local (cf. ${DB_HOST}, etc.).
+    # Les secrets pointent vers le Secret unique 'crowdsec-secrets' généré par le
+    # template crowdsec-secrets.yaml (mots de passe random à la 1ère install).
+    env:
+      - name: DB_USER
+        valueFrom:
+          secretKeyRef:
+            name: crowdsec-secrets
+            key: crowdsecUsername
+      - name: DB_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: crowdsec-secrets
+            key: crowdsecPassword
+      - name: DB_NAME
+        value: crowdsec
+      # LAPI passe par PgBouncer (pas Postgres direct) → pool de connexions.
+      - name: DB_HOST
+        value: crowdsec-pgbouncer
+
+  # ---------------------------------------------------------------------------
+  # Configuration de CrowdSec (LAPI ET agent partagent ce bloc)
+  # ---------------------------------------------------------------------------
+  config:
+    # config.yaml.local : surcouche fusionnée par-dessus config.yaml par CrowdSec.
+    # ATTENTION : à cause de yaml.Unmarshal en Go, toute clé top-level présente
+    # ici REMPLACE entièrement la struct correspondante (les champs sœurs non
+    # listés tombent au défaut compilé). C'est pour ça que data_dir N'EST PAS
+    # patché ici mais via une PVC dédiée (cf. agentDataPvc plus bas).
+    config.yaml.local: |
+      db_config:
+        type: postgresql
+        host: "${DB_HOST}"
+        port: 5432
+        user: "${DB_USER}"
+        password: "${DB_PASSWORD}"
+        db_name: "${DB_NAME}"
+        sslmode: disable
+        max_open_conns: 50
+        decision_bulk_size: 500
+        flush:
+          max_items: 5000
+          max_age: 7d
+
+      api:
+        server:
+          # Auto-registration : permet aux agents de s'enregistrer eux-mêmes
+          # auprès du LAPI sans étape manuelle. Le token est généré par le
+          # sub-chart et injecté via ${REGISTRATION_TOKEN}.
+          auto_registration:
+            enabled: true
+            token: "${REGISTRATION_TOKEN}"  # /!\ ne pas modifier
+            # Plages autorisées à s'enregistrer (typiquement le réseau pod/service).
+            allowed_ranges:
+              - "127.0.0.1/32"
+              - "192.168.0.0/16"
+              - "10.0.0.0/8"
+              - "172.16.0.0/12"
+          # trusted_ips : IPs jamais bannies (whitelist hard).
+          # Inclure 10.0.0.0/8 évite que le LAPI banne accidentellement les
+          # IPs internes du cluster (loopback, services k8s, etc.).
+          trusted_ips:
+            - 127.0.0.1
+            - ::1
+            - 10.0.0.0/8
+
+    # profiles.yaml : règles d'application des décisions sur les alertes.
+    # Évalué dans l'ordre, premier match qui a `on_success: break` arrête le scan.
+    # Doc : https://docs.crowdsec.net/docs/profiles/intro
+    profiles.yaml: |
+      # 1. Scanners HTTP "doux" → captcha plutôt qu'un ban (faux positifs fréquents).
+      name: default_captcha
+      filters:
+        - Alert.Remediation == true
+          && Alert.GetScope() == "Ip"
+          && Alert.GetScenario() in [
+            "crowdsecurity/http-admin-interface-probing",
+            "crowdsecurity/http-crawl-non_statics",
+            "crowdsecurity/http-generic-403-bf",
+            "crowdsecurity/http-probing"
+          ]
+      decisions:
+        - type: captcha
+          duration: 4h
+      on_success: break
+
+      ---
+      # 2. Toute autre alerte par IP → ban.
+      # duration_expr : escalade exponentielle — chaque récidive double la durée
+      # (4h, 8h, 12h, 16h…) en se basant sur le nombre de décisions passées.
+      name: default_ip_remediation
+      filters:
+        - Alert.Remediation == true && Alert.GetScope() == "Ip"
+      decisions:
+        - type: ban
+          duration: 4h
+      duration_expr: Sprintf('%dh', (GetDecisionsCount(Alert.GetValue()) + 1) * 4)
+      on_success: break
+
+      ---
+      # 3. Alertes par plage CIDR (rare : scenarios qui agrègent par range) → ban.
+      name: default_range_remediation
+      filters:
+        - Alert.Remediation == true && Alert.GetScope() == "Range"
+      decisions:
+        - type: ban
+          duration: 4h
+      duration_expr: Sprintf('%dh', (GetDecisionsCount(Alert.GetValue()) + 1) * 4)
+      on_success: break
+
+    # ---------------------------------------------------------------------------
+    # Scenarios / parsers / postoverflows CUSTOM (fournis par toi)
+    # ---------------------------------------------------------------------------
+    # Passthrough vers le sub-chart officiel : chaque map { filename → contenu }
+    # ci-dessous est matérialisée par le sub-chart en ConfigMap puis montée en
+    # subPath dans le DaemonSet agent, aux emplacements :
+    #   scenarios      → /etc/crowdsec/scenarios/<filename>
+    #   parsers        → /etc/crowdsec/parsers/<stage>/<filename>
+    #   postoverflows  → /etc/crowdsec/postoverflows/<stage>/<filename>
+    #
+    # Ces items s'ajoutent (ils ne remplacent pas) à ceux installés depuis le
+    # hub par `collectionsJob.collections`. Les noms de fichier doivent être
+    # uniques dans leur dossier.
+    #
+    # À chaque helm upgrade, le hook `restart-agent-job` (sync-wave 5) fait un
+    # kubectl rollout restart du DaemonSet, donc les modifs sont prises en
+    # compte automatiquement — pas d'action manuelle.
+    #
+    # Doc scenarios     : https://docs.crowdsec.net/docs/scenarios/intro
+    # Doc parsers       : https://docs.crowdsec.net/docs/parsers/intro
+    # Doc postoverflows : https://docs.crowdsec.net/docs/whitelist/create
+    scenarios: {}
+    # Exemple — détecter des crawls sur /admin :
+    # scenarios:
+    #   my-admin-crawl.yaml: |
+    #     type: leaky
+    #     name: myorg/http-admin-crawl
+    #     description: "Crawls suspects sur /admin"
+    #     filter: "evt.Meta.log_type == 'http_access-log' && evt.Meta.http_path startsWith '/admin'"
+    #     leakspeed: 10s
+    #     capacity: 5
+    #     groupby: evt.Meta.source_ip
+    #     labels:
+    #       type: scan
+    #       remediation: true
+
+    # Parsers custom, par stage (s00-raw → décodage brut, s01-parse → parsing
+    # applicatif, s02-enrich → enrichissement post-parsing). Laisser {} pour
+    # une stage inutilisée.
+    parsers:
+      s00-raw: {}
+      s01-parse: {}
+      s02-enrich: {}
+    # parsers:
+    #   s01-parse:
+    #     my-app-parser.yaml: |
+    #       onsuccess: next_stage
+    #       filter: "evt.Parsed.program == 'my-app'"
+    #       nodes:
+    #         - grok:
+    #             pattern: '%{IPORHOST:source_ip} - .*'
+    #             apply_on: message
+
+    # Postoverflows : appliqués APRÈS le déclenchement d'un scenario, avant
+    # l'écriture de l'alerte. Utilisation typique : whitelist d'IPs / CIDRs
+    # légitimes (stage s01-whitelist).
+    postoverflows:
+      s00-enrich: {}
+      s01-whitelist: {}
+    # postoverflows:
+    #   s01-whitelist:
+    #     office-ips.yaml: |
+    #       name: myorg/office-whitelist
+    #       description: "IPs bureau à ne jamais bannir"
+    #       whitelist:
+    #         reason: "office subnet"
+    #         ip:
+    #           - "203.0.113.10"
+    #         cidr:
+    #           - "203.0.113.0/24"
+
+  # ---------------------------------------------------------------------------
+  # Agent (DaemonSet — un pod par nœud)
+  # ---------------------------------------------------------------------------
+  # Lit les logs de pods spécifiques (via container_runtime), parse, applique les
+  # scenarios, et envoie les alertes au LAPI.
+  agent:
+    # Sources de logs à surveiller. Chaque entrée = un filtre pod + un parser CrowdSec.
+    # podName : pattern glob sur le nom de pod dans le namespace.
+    # program : nom du parser CrowdSec à appliquer (nginx, apache2, sshd, …).
+    # poll_without_inotify : nécessaire avec containerd (les logs sont en append-only
+    # via le runtime, inotify ne reçoit pas les events de manière fiable).
+    acquisition:
+      - namespace: ingress-controller
+        podName: nginx-ingress-ingress-nginx-controller-*
+        poll_without_inotify: true
+        program: nginx
+      - namespace: ingress-controller
+        podName: traefik-*
+        poll_without_inotify: true
+        program: traefik
+
+    resources:
+      requests:
+        cpu: 250m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+
+    persistentVolume:
+      # PVC pour /etc/crowdsec (config + hub content installé par cscli).
+      # RWX impératif : un pod par nœud, tous lisent la même PVC.
+      config:
+        enabled: true
+        accessModes: ["ReadWriteMany"]
+        size: 1Gi
+
+    # PVC dédiée pour /var/lib/crowdsec/data (fichiers .txt utilisés par scenarios :
+    # listes CVE, blocklists, etc.). Cf. agentDataPvc tout en bas du fichier pour
+    # le dimensionnement. Sans cette PVC → erreurs "file not found in expr library"
+    # après chaque restart de pod.
+    extraVolumes:
+      - name: crowdsec-agent-data
+        persistentVolumeClaim:
+          claimName: crowdsec-agent-data-pvc
+
+    extraVolumeMounts:
+      - mountPath: /var/lib/crowdsec/data
+        name: crowdsec-agent-data
+
+# =============================================================================
+#  WebUI — interface graphique d'administration CrowdSec
+# =============================================================================
+# Image tierce (CrowdSec lui-même ne fournit pas de WebUI officielle open-source).
+# Le pod s'authentifie auprès du LAPI en tant que machine "crowdsec-web-ui",
+# créée par le hook register-job.yaml (post-install/post-upgrade).
+# Persistance : un PVC /app/data pour stocker la BDD SQLite locale de la WebUI
+# (préférences, sessions, etc.).
+webui:
+  image:
+    repository: ghcr.io/theduffman85/crowdsec-web-ui
+    pullPolicy: IfNotPresent
+    # 2026.8.3 : intègre l'authentification native (mot de passe + TOTP + passkeys
+    # + OIDC SSO) et le format de config unifié YAML. Les env `CROWDSEC_*` legacy
+    # ci-dessous sont conservées : elles alimentent la migration one-shot vers
+    # /app/data/config.yaml au 1er démarrage. Pour un contrôle continu, préférer
+    # les env `CONFIG_*` (cf. bloc `sso.oidc` plus bas).
+    tag: 2026.8.3
+
+  imagePullSecrets: []
+  nameOverride: webui
+  fullnameOverride: ""
+  podAnnotations: {}
+  podLabels: {}
+  podSecurityContext:
+    fsGroup: 1000
+
+  securityContext:
+    capabilities:
+      drop:
+      - ALL
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
+
+  service:
+    type: ClusterIP
+    port: 3000
+
+  # ---------------------------------------------------------------------------
+  # Exposition externe : choisir UNE des options ci-dessous
+  #   • ingress       → ressource Ingress classique (nginx-ingress, etc.)
+  #   • httpRoute     → Gateway API (k8s 1.30+ avec contrôleur compatible)
+  #   • ingressRoute  → CRD natif Traefik (traefik.io/v1alpha1)
+  # Pour exposer la WebUI vers Internet, activer aussi networkPolicy.extraIngress.
+  # Depuis 2026.7.x l'image WebUI a une auth intégrée (login/mdp + TOTP +
+  # passkeys + OIDC SSO) — cf. bloc `sso` plus bas. Pas besoin d'auth au
+  # niveau reverse-proxy.
+  # ---------------------------------------------------------------------------
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+      # kubernetes.io/ingress.class: nginx
+      # kubernetes.io/tls-acme: "true"
+    hosts:
+      - host: chart-example.local
+        paths:
+          - path: /
+            pathType: ImplementationSpecific
+    tls: []
+      # - secretName: chart-example-tls
+      #   hosts:
+      #     - chart-example.local
+
+  # -- Expose the service via gateway-api HTTPRoute
+  # Requires Gateway API resources and suitable controller installed within the cluster
+  # (see: https://gateway-api.sigs.k8s.io/guides/)
+  httpRoute:
+    # HTTPRoute enabled.
+    enabled: false
+    # HTTPRoute annotations.
+    annotations: {}
+    # Which Gateways this Route is attached to.
+    parentRefs:
+    - name: gateway
+      sectionName: http
+      # namespace: default
+    # Hostnames matching HTTP header.
+    hostnames:
+    - chart-example.local
+    # List of rules and filters applied.
+    rules:
+    - matches:
+      - path:
+          type: PathPrefix
+          value: /headers
+    #   filters:
+    #   - type: RequestHeaderModifier
+    #     requestHeaderModifier:
+    #       set:
+    #       - name: My-Overwrite-Header
+    #         value: this-is-the-only-value
+    #       remove:
+    #       - User-Agent
+    # - matches:
+    #   - path:
+    #       type: PathPrefix
+    #       value: /echo
+    #     headers:
+    #     - name: version
+    #       value: v2
+
+  # -- Expose the service via Traefik IngressRoute (CRD traefik.io/v1alpha1)
+  # Alternative aux Ingress / HTTPRoute quand l'ingress controller est Traefik
+  # configuré en mode IngressRoute (CRD natif), ce qui permet d'utiliser
+  # directement les Middlewares Traefik (auth, rate-limit, redirects, …).
+  # Docs : https://doc.traefik.io/traefik/routing/providers/kubernetes-crd/#kind-ingressroute
+  ingressRoute:
+    enabled: false
+    annotations: {}
+    # Points d'entrée Traefik (correspondent à --entryPoints.<name> dans la conf
+    # Traefik — typiquement `web` (80) et `websecure` (443)).
+    entryPoints:
+      - websecure
+    # Liste de routes — chaque entrée = un matcher Traefik :
+    #   Host(`...`), Host(`...`) && PathPrefix(`/api`), HeaderRegexp(...), etc.
+    routes:
+      - match: Host(`chart-example.local`)
+        # kind: Rule  (par défaut)
+        # Middlewares Traefik éventuels — format :
+        #   - name: my-mw           # même namespace que l'IngressRoute
+        #   - name: my-mw
+        #     namespace: other-ns   # nécessite allowCrossNamespace côté Traefik
+        middlewares: []
+    # TLS — au choix : secretName (cert pré-provisionné) OU certResolver (ACME).
+    tls:
+      enabled: false
+      # Secret K8s contenant le couple tls.crt / tls.key.
+      secretName: ""
+      # Nom du certResolver Traefik (cf. --certificatesresolvers.<name>).
+      certResolver: ""
+      # Liste optionnelle de domains pour ACME multi-host / SAN :
+      # domains:
+      #   - main: example.com
+      #     sans: [www.example.com, api.example.com]
+      domains: []
+      # Référence d'un TLSOption Traefik (mTLS, ciphers, etc.) :
+      # options:
+      #   name: my-tls-options
+      #   namespace: traefik-system
+      options: {}
+
+  # ---------------------------------------------------------------------------
+  # sso — Authentification native de la WebUI (image ≥ 2026.7.x)
+  # ---------------------------------------------------------------------------
+  # Depuis 2026.7.x l'image expose un vrai système d'auth intégré (login/mot
+  # de passe + TOTP + passkeys + OIDC SSO). Ce bloc active exclusivement le
+  # volet OIDC SSO (SAML n'est PAS supporté par l'image).
+  #
+  # Providers testés côté image : Authentik, Authelia, Keycloak.
+  # Doc image : https://github.com/TheDuffman85/crowdsec-web-ui#authentication
+  #
+  # Valeurs projetées en `CONFIG_AUTH_OIDC_*` env vars sur le pod. Ces env
+  # écrasent la config YAML à chaque démarrage (pas de dérive silencieuse).
+  sso:
+    enabled: false
+    oidc:
+      # URL du discovery OIDC (issuer). Ex :
+      #   https://auth.example.com/application/o/crowdsec-webui/
+      #   https://keycloak.example.com/realms/myrealm
+      issuerUrl: ""
+
+      # Identifiant client OAuth2 configuré côté IdP.
+      clientId: ""
+
+      # Client secret. Deux options :
+      #   1) Inline ci-dessous → le chart génère un Secret <fullname>-sso
+      #      (clé `clientSecret`) et l'injecte via secretKeyRef.
+      #      ⚠️ commit d'un secret en clair dans values → à réserver aux
+      #      environnements de test.
+      #   2) `existingSecret` renseigné → référence d'un Secret pré-existant.
+      #      Recommandé en prod (sealed-secrets, ExternalSecrets…).
+      clientSecret: ""
+      existingSecret: ""
+      existingSecretKey: clientSecret
+
+      # Scopes OIDC demandés lors du login. Doit contenir `openid`.
+      scope: "openid profile email"
+
+      # Nom du claim qui porte les groupes de l'utilisateur (pour role mapping).
+      groupsClaim: groups
+
+      # Groupes de l'IdP dont les membres reçoivent le rôle Admin dans la WebUI.
+      # Liste — projetée en CONFIG_AUTH_OIDC_ADMIN_GROUPS_0/_1/…
+      adminGroups: []
+      # Exemple :
+      # adminGroups:
+      #   - "crowdsec-admins"
+      #   - "sre"
+
+      # Groupes IdP dont les membres reçoivent le rôle Read-Only.
+      readOnlyGroups: []
+      # Exemple :
+      # readOnlyGroups:
+      #   - "crowdsec-viewers"
+
+      # Rôle attribué à un user OIDC qui ne match AUCUN des groupes ci-dessus.
+      # Valeurs possibles : `deny` (login refusé), `admin`, `read-only`.
+      # Défaut sécurisé : deny.
+      unmatchedRole: deny
+
+  resources:
+    limits:
+      memory: 768Mi
+    requests:
+      cpu: 100m
+      memory: 512Mi
+
+  # This is to setup the liveness and readiness probes more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
+  livenessProbe:
+    httpGet:
+      path: /
+      port: http
+  readinessProbe:
+    httpGet:
+      path: /
+      port: http
+
+  # PVC pour /app/data dans le pod WebUI : stockage local (sessions, prefs).
+  # ReadWriteOnce car la WebUI est un Deployment à 1 replica.
+  persistence:
+    enabled: true
+    size: 1Gi
+    accessModes:
+      - ReadWriteOnce
+    storageClass: ""  # laisser vide pour utiliser la StorageClass par défaut du cluster
+
+  # Variables d'environnement supplémentaires (en plus des CROWDSEC_URL/USER/PASSWORD
+  # injectées en dur par le template). Voir env: et envFrom: dans le deployment.
+  # Spec complète EnvVar : value, valueFrom.secretKeyRef, configMapKeyRef…
+  # Les variables ci-dessous configurent le comportement de l'UI tierce
+  # (theduffman85/crowdsec-web-ui) :
+  # Depuis l'image 2026.7.x l'UI lit la config sous forme d'arbre CONFIG_* (et
+  # non plus les envs CROWDSEC_* d'origine, qui ne servaient qu'à la migration
+  # one-shot vers /app/data/config.yaml au 1er boot). Les envs ci-dessous sont
+  # donc en `CONFIG_*` : elles sont ré-appliquées à chaque démarrage, donc
+  # idempotentes.
+  #
+  # Le deployment.yaml re-projette EN PLUS chaque valeur ci-dessous vers son
+  # ancien nom `CROWDSEC_*` via `$(CONFIG_…)` — cf. bloc
+  # « Aliases legacy » du template. Cela garantit qu'une image antérieure à
+  # 2026.7 (ou un fork tiers qui lit encore les anciens noms) reste fonctionnelle
+  # sans intervention manuelle. Aucune action de ta part si tu utilises l'image
+  # officielle en version 2026.7+.
+  env:
+  # Exclut les alertes en provenance de la Central API (CAPI / community blocklist)
+  # de la vue par défaut → focus sur les alertes locales.
+  # Legacy alias: CROWDSEC_ALERT_INCLUDE_CAPI
+  - name: CONFIG_CROWDSEC_ALERT_FILTERS_INCLUDE_CAPI
+    value: "false"
+  # Exclut les alertes sans origine identifiée.
+  # Legacy alias: CROWDSEC_ALERT_INCLUDE_ORIGIN_EMPTY
+  - name: CONFIG_CROWDSEC_ALERT_FILTERS_INCLUDE_ORIGIN_EMPTY
+    value: "false"
+  # Désactive l'affichage des décisions en mode simulation (CrowdSec dry-run).
+  # Legacy alias: CROWDSEC_SIMULATIONS_ENABLED
+  - name: CONFIG_CROWDSEC_SIMULATIONS_ENABLED
+    value: "false"
+  # Fenêtre temporelle d'historique affichée par défaut (60 jours).
+  # Legacy alias: CROWDSEC_LOOKBACK_PERIOD
+  - name: CONFIG_CROWDSEC_SYNC_LOOKBACK
+    value: 1440h
+  # Intervalle de polling du LAPI quand l'utilisateur a la WebUI ouverte.
+  # Legacy alias: CROWDSEC_REFRESH_INTERVAL
+  - name: CONFIG_CROWDSEC_SYNC_REFRESH_INTERVAL
+    value: 30s
+  # Intervalle de polling quand l'utilisateur est inactif (économise des requêtes).
+  # Legacy alias: CROWDSEC_IDLE_REFRESH_INTERVAL
+  - name: CONFIG_CROWDSEC_SYNC_IDLE_REFRESH_INTERVAL
+    value: 5m
+  # Durée d'inactivité avant de basculer sur IDLE_REFRESH_INTERVAL.
+  # Legacy alias: CROWDSEC_IDLE_THRESHOLD
+  - name: CONFIG_CROWDSEC_SYNC_IDLE_THRESHOLD
+    value: 2m
+  # Au boot, si LAPI n'est pas joignable → retry au lieu de crasher.
+  # Legacy alias: CROWDSEC_BOOTSTRAP_RETRY_DELAY / CROWDSEC_BOOTSTRAP_RETRY_ENABLED
+  - name: CONFIG_CROWDSEC_SYNC_BOOTSTRAP_RETRY_DELAY
+    value: 30s
+  - name: CONFIG_CROWDSEC_SYNC_BOOTSTRAP_RETRY_ENABLED
+    value: "true"
+  # -- Envs retirées upstream à partir de 2026.7 (aucun équivalent CONFIG_*) :
+  #     - CROWDSEC_ALWAYS_SHOW_MACHINE  (l'affichage machine est désormais
+  #       piloté par les préférences colonnes côté UI)
+  #     - CROWDSEC_FULL_REFRESH_INTERVAL (le refresh incrémental a remplacé le
+  #       full refresh — plus de purge cache périodique côté client)
+  # Examples:
+  #   - name: LOG_LEVEL
+  #     value: debug
+  #   - name: SOME_SECRET
+  #     valueFrom:
+  #       secretKeyRef:
+  #         name: my-secret
+  #         key: my-key
+
+  # Additional environment variables sourced from ConfigMaps or Secrets.
+  envFrom: []
+  # Examples:
+  #   - configMapRef:
+  #       name: my-configmap
+  #   - secretRef:
+  #       name: my-secret
+
+  # Additional volumes on the output Deployment definition.
+  volumes: []
+
+  # Additional volumeMounts on the output Deployment definition.
+  volumeMounts:
+    - name: data
+      mountPath: /app/data
+
+  nodeSelector: {}
+
+  tolerations: []
+
+  affinity: {}
+
+  # Hook PostSync (post-install + post-upgrade) qui crée l'entrée "machine" en BDD
+  # pour la WebUI (table `machines` du LAPI). Sans ce job, la WebUI ne peut pas
+  # s'authentifier auprès du LAPI.
+  # Implémentation : pod basé sur l'image postgres (pour avoir psql) qui :
+  #   1. Attend que PostgreSQL soit joignable
+  #   2. Attend que LAPI ait initialisé le schéma (table `machines` existe)
+  #   3. INSERT ... ON CONFLICT DO UPDATE — idempotent, hash bcrypt via pgcrypto
+  # cf. templates/webui/register-job.yaml pour le détail.
+  registerJob:
+    enabled: true
+    image:
+      repository: postgres
+      pullPolicy: IfNotPresent
+      tag: "18-alpine"
+
+# =============================================================================
+#  agentDataPvc — PVC pour les fichiers de données des scenarios
+# =============================================================================
+# Beaucoup de scenarios CrowdSec utilisent des fichiers `.txt` chargés par
+# expression `LookupFile()` (ex: log4j2_cve_2021_44228.txt, listes d'IPs malicieuses,
+# user-agents bannis…). Ces fichiers sont téléchargés à `cscli collections install`
+# et stockés dans /var/lib/crowdsec/data — emplacement éphémère sans cette PVC.
+#
+# Sans cette PVC → après un restart de pod agent :
+#   • erreurs "file 'log4j2_cve_2021_44228.txt' not found in expr library"
+#   • les scenarios concernés ne matchent plus
+#
+# Cette PVC est montée :
+#   • dans le job install-collections (cscli écrit les fichiers ici)
+#   • dans le DaemonSet agent via crowdsec.agent.extraVolumeMounts (cf. plus haut)
+#
+# Nom fixe `crowdsec-agent-data-pvc` (pas préfixé par release) pour pouvoir
+# être référencé en YAML statique depuis crowdsec.agent.extraVolumes
+# (le sous-chart ne template pas les extraVolumes via tpl).
+agentDataPvc:
+  enabled: true
+  size: 1Gi
+  accessModes:
+    - ReadWriteMany   # DaemonSet → potentiellement plusieurs nœuds en lecture
+  storageClass: ""    # vide = StorageClass par défaut du cluster
+
+# =============================================================================
+#  collectionsJob — installation des collections / parsers / postoverflows
+# =============================================================================
+# Hook PostSync (sync-wave 0) qui :
+#   1. Attend que l'agent ait initialisé config.yaml dans le PVC config
+#   2. Crée le symlink /etc/crowdsec → /etc/crowdsec_data
+#   3. Lance `cscli hub update` + `cscli {collections,parsers,postoverflows} install`
+#
+# Pré-requis : accès sortant HTTPS vers hub.crowdsec.net (cf. networkPolicy).
+# Idempotent : cscli ne réinstalle pas un item déjà présent.
+#
+# Liste de référence des collections : https://app.crowdsec.net/hub/collections
+collectionsJob:
+  enabled: true
+  # image : hérite de crowdsec.image (repository / tag / pullPolicy du sub-chart).
+  # Surcharger crowdsec.image.tag dans les values suffit à mettre à jour ce job également.
+
+  # Collections à installer. Une "collection" regroupe des parsers + scenarios +
+  # postoverflows cohérents pour un produit (nginx, apache, sshd, mysql, etc.).
+  collections:
+    - crowdsecurity/nginx
+    - crowdsecurity/traefik
+    - crowdsecurity/linux
+  # Parsers seuls (rarement utile, en général livrés dans une collection).
+  parsers: []
+  # Postoverflows : règles d'enrichissement / whitelist appliquées après scenarios.
+  postoverflows: []
+
+  # ---------------------------------------------------------------------------
+  # agentRestartJob — restart du DaemonSet agent après l'installation
+  # ---------------------------------------------------------------------------
+  # Hook PostSync (sync-wave 5, donc APRÈS collectionsJob wave 0) qui exécute
+  # `kubectl rollout restart daemonset/<release>-agent`. Force l'agent à
+  # recharger le hub content fraîchement installé (sinon il faut attendre un
+  # redéploiement ou un kill manuel).
+  # Nécessite RBAC : ServiceAccount + Role "patch daemonsets" — créés
+  # automatiquement par templates/restart-agent-job.yaml et supprimés à la fin.
+  agentRestartJob:
+    enabled: true
+    image:
+      repository: registry.k8s.io/kubectl
+      tag: "v1.32.9"
+      pullPolicy: IfNotPresent
+
+# =============================================================================
+#  PostgreSQL (sub-chart cloudpirates) — backend de stockage CrowdSec
+# =============================================================================
+# Doc upstream : https://artifacthub.io/packages/helm/cloudpirates-postgres/postgres?modal=values
+# NOTE: la clé doit correspondre au nom du chart ("postgres"), pas à "postgresql".
+#
+# Le LAPI persiste ici : alertes, décisions, machines, bouncers, blocklists…
+# Le mot de passe `crowdsecPassword` est généré aléatoirement par le template
+# crowdsec-secrets.yaml du chart parent à la 1ère install (et conservé ensuite).
+postgres:
+  enabled: true
+  # fullnameOverride: nom du service. crowdsec.lapi DB_HOST pointe vers
+  # `crowdsec-pgbouncer` qui forward vers ce service "postgres".
+  fullnameOverride: postgres
+
+  auth:
+    username: crowdsec
+    database: crowdsec
+    # Le sub-chart lit le mot de passe depuis ce Secret au lieu d'en générer un.
+    existingSecret: crowdsec-secrets
+    secretKeys:
+      adminPasswordKey: crowdsecPassword
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 384Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
+  persistence:
+    enabled: true
+    size: 5Gi
+    accessModes:
+      - ReadWriteOnce
+
+  metrics:
+    enabled: true
+
+  config:
+    # PostgreSQL 18 stores passwords as scram-sha-256 by default.
+    # The chart's default pg_hba.conf uses md5, which is incompatible:
+    # md5 auth cannot verify a scram-sha-256 stored password → auth always fails.
+    pgHbaConfig: |
+      # TYPE  DATABASE        USER            ADDRESS                 METHOD
+      local   all             all                                     trust
+      host    all             all             127.0.0.1/32            trust
+      host    all             all             ::1/128                 trust
+      host    all             all             all                     scram-sha-256
+
+  # Scripts SQL exécutés UNE fois à la création initiale de la BDD.
+  #   • pg_stat_statements : extension de profiling des requêtes (utile en debug).
+  #   • pgcrypto           : fournit crypt() + gen_salt('bf') utilisé par
+  #                          register-job.yaml pour générer le hash bcrypt
+  #                          de la machine WebUI sans dépendance externe.
+  initdb:
+    scripts:
+      init-crowdsec.sql: |
+        CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+        CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+  livenessProbe:
+    initialDelaySeconds: 10
+    failureThreshold: 15
+    periodSeconds: 5
+
+  startupProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 60
+
+# =============================================================================
+#  PgBouncer (sub-chart icoretech) — pool de connexions devant PostgreSQL
+# =============================================================================
+# Doc upstream : https://artifacthub.io/packages/helm/icoretech/pgbouncer/3.1.2?modal=values
+#
+# Le LAPI ouvre/ferme beaucoup de connexions courtes (par requête API).
+# PgBouncer mutualise tout ça en `transaction pool mode` → quelques connexions
+# physiques vers Postgres, beaucoup de connexions logiques pour les clients.
+#
+# Le service `crowdsec-pgbouncer` est référencé par crowdsec.lapi DB_HOST.
+pgbouncer:
+  enabled: true
+  fullnameOverride: crowdsec-pgbouncer
+
+  config:
+    # Authentification PgBouncer ↔ Postgres (super-user pour query userlist).
+    existingAdminSecret: crowdsec-secrets
+    adminUserKey: pgbouncerAdminUser
+    adminPasswordKey: pgbouncerAdminPassword
+    adminUser: pgbouncer_auth
+
+    # Authentification clients ↔ PgBouncer (userlist.txt généré par le secret).
+    existingUserlistSecret: crowdsec-secrets
+
+    # Mapping logique : DB "crowdsec" exposée par PgBouncer → DB "crowdsec" sur
+    # le service "postgres".
+    databases:
+      crowdsec:
+        host: postgres
+        port: 5432
+        dbname: crowdsec
+
+    pgbouncer:
+      # extra_float_digits envoyé par certains drivers Go → ignorer pour éviter
+      # un échec de startup en mode transaction.
+      ignore_startup_parameters: extra_float_digits
+      # transaction pool : connexion serveur libérée à chaque COMMIT/ROLLBACK.
+      # Optimal pour des workloads à requêtes courtes type API REST.
+      pool_mode: transaction
+      max_client_conn: 800            # connexions logiques max simultanées
+      default_pool_size: 30           # connexions Postgres par DB+user
+      min_pool_size: 5                # connexions toujours ouvertes (warm)
+      reserve_pool_size: 10           # connexions overflow temporaires
+      reserve_pool_timeout: 3         # délai avant d'utiliser le reserve pool
+      max_db_connections: 100         # plafond global par DB
+      server_idle_timeout: 600        # ferme une connexion serveur inactive (10min)
+      client_idle_timeout: 0          # pas de timeout client (LAPI long-running)
+      server_connect_timeout: 5
+      server_login_retry: 15
+      query_timeout: 0                # pas de kill auto sur requête longue
+      server_tls_sslmode: prefer      # TLS opportuniste vers Postgres
+      log_connections: 0              # silencieux : 1 ligne par connexion = trop
+      log_disconnections: 0
+      log_pooler_errors: 1            # garder les erreurs pool (utiles en debug)
+      stats_period: 60                # rapport stats interne toutes les 60s
+
+  # --- Réplicas ---
+  replicaCount: 1
+
+  # --- Ressources ---
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 70
+    runAsGroup: 70
+
+  # --- Anti-affinité ---
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: pgbouncer
+            topologyKey: kubernetes.io/hostname
+
+  revisionHistoryLimit: 3
+
+# =============================================================================
+#  calicoBouncer — bouncer Kubernetes-native pour Calico
+# =============================================================================
+# Déploiement OPTIONNEL (désactivé par défaut). Consomme l'API decisions/stream
+# du LAPI et matérialise les bans dans une Calico GlobalNetworkPolicy attachée
+# à des HostEndpoints. Le trafic des IPs bannies est droppé au niveau du nœud
+# (avant qu'il n'atteigne les pods).
+#
+# Architecture :
+#
+#   LAPI ──stream (X-Api-Key)──▶ bouncer-pod ──update──▶ GlobalNetworkPolicy
+#                                    │                          │
+#                                    │                          ▼
+#                                    └─ Lease (leader election) HostEndpoint(s)
+#                                                               │
+#                                                          dataplane (iptables/eBPF)
+#
+# Caractéristiques :
+#   • Stream API (delta) : pas de re-fetch complet à chaque tick
+#   • Conservation des anciennes IPs : reconciliation diff-based
+#   • Gestion des suppressions (champ `deleted` du stream)
+#   • Leader election via coordination.k8s.io/Lease (multi-replicas safe)
+#   • Backoff exponentiel sur erreurs (réseau, API K8s)
+#   • Compatible iptables ET eBPF dataplane (cf. policy.preDNAT plus bas)
+#
+# Pré-requis (cf. README pour la liste détaillée) :
+#   • Calico installé en tant que CNI (typha + felix)
+#   • CRDs crd.projectcalico.org/v1 (GlobalNetworkPolicy + HostEndpoint)
+#   • Au moins 1 HostEndpoint labellisé `crowdsec-protected: "true"`
+#     (créés manuellement, via autoHostEndpoints Calico, ou via la section
+#     hostEndpoints ci-dessous)
+#   • Image Python disponible (PyPI accessible pour pip install au démarrage,
+#     ou pré-bake d'une image custom — cf. image.repository)
+calicoBouncer:
+  # Activer le déploiement. Désactivé par défaut — n'a de sens que sur un
+  # cluster Calico.
+  enabled: false
+
+  # Nom enregistré côté LAPI (table `bouncers`). Doit être unique par bouncer.
+  bouncerName: crowdsec-calico-bouncer
+
+  # Nombre de replicas. Un seul écrit la GNP à la fois (élection Lease).
+  # 2 replicas = HA — bascule en quelques secondes si un pod meurt.
+  replicaCount: 2
+
+  # Image utilisée par le pod bouncer. Le défaut `python:3.12-alpine` télécharge
+  # `requests` + `kubernetes` à chaque démarrage via pip (≈ 30s). Pour éviter
+  # cette dépendance externe, pré-builder une image custom et surcharger ici.
+  image:
+    repository: python
+    tag: "3.12-alpine"
+    pullPolicy: IfNotPresent
+
+  # Versions des libs Python installées au démarrage (cf. command: pip install).
+  # Ignorées si vous utilisez une image pré-buildée incluant déjà ces libs.
+  pythonDeps:
+    requestsVersion: "2.32.3"
+    kubernetesVersion: "30.1.0"
+
+  imagePullSecrets: []
+
+  # Délai entre deux appels stream (en secondes). Le LAPI répond immédiatement
+  # avec la delta — pas de long-poll côté serveur, donc plus c'est court, plus
+  # la propagation est rapide (au prix de plus de requêtes).
+  pollIntervalSeconds: 10
+
+  # Plafond du backoff exponentiel sur erreur (réseau, K8s API). En secondes.
+  backoffMaxSeconds: 300
+
+  logLevel: INFO
+
+  # ---------------------------------------------------------------------------
+  # actOnTypes — types de décisions à matérialiser en Deny Calico
+  # ---------------------------------------------------------------------------
+  # Calico travaille en L3/L4 et ne sait que dropper ou laisser passer un
+  # paquet. Les types de décision CrowdSec qui exigent du L7 (captcha,
+  # throttle, etc.) ne sont pas applicables tels quels : les inclure ici
+  # signifie « traiter comme un block dur au niveau réseau ».
+  #
+  # Stratégies typiques :
+  #   • Tu as un bouncer L7 (nginx/traefik/HAProxy) → laisser `[ban]`.
+  #     Le bouncer L7 sert les captchas, le Calico bloque les bans.
+  #   • Pas de bouncer L7 → mettre `[ban, captcha]` (voire ajouter `throttle`)
+  #     pour avoir un blocage strict à la frontière réseau.
+  #
+  # Attention : si ton `profiles.yaml` envoie des scénarios scanner-like
+  # (http-probing, http-crawl-non_statics, …) vers le profil `default_captcha`,
+  # ces IPs n'apparaîtront PAS dans la GNP avec le défaut `[ban]`. C'est le
+  # comportement voulu côté CrowdSec (captcha = soft action). Si tu veux quand
+  # même bloquer ces IPs au niveau réseau, ajouter `captcha` ici.
+  actOnTypes:
+    - ban
+
+  # Leader election via coordination.k8s.io/Lease — un seul replica reconcilie
+  # à la fois. Si le leader perd la course (renouvellement Lease échoue), les
+  # autres replicas prennent le relais après expiration.
+  leaderElection:
+    leaseName: crowdsec-calico-bouncer
+    leaseDurationSeconds: 30   # durée pendant laquelle un leader est considéré actif
+    renewInterval: 10          # fréquence de renouvellement (doit être < leaseDuration)
+
+  # ---------------------------------------------------------------------------
+  # GlobalNetworkPolicy — règles appliquées par Calico
+  # ---------------------------------------------------------------------------
+  # Une GNP unique nommée `name` est créée / mise à jour avec un Deny par IP
+  # bannie. Le `selector` cible les HostEndpoints qui doivent l'appliquer.
+  #
+  # Doc : https://docs.tigera.io/calico/latest/reference/resources/globalnetworkpolicy
+  policy:
+    name: crowdsec-bans
+
+    # Sélecteur Calico (PAS un selector K8s — syntaxe Calico).
+    # Format : `<label> == '<value>'`, combinable via `&&` / `||`.
+    # selector: "crowdsec-protected == 'true'"
+    selector: "has(kubernetes.io/hostname)"
+
+    # Types de règles. La policy ne contient que des règles Ingress (deny des
+    # IPs sources bannies). Si vous voulez aussi dropper l'EGRESS de vos
+    # nœuds vers ces IPs, ajouter `Egress` ici ET ajuster le script pour
+    # générer des règles egress (non implémenté par défaut).
+    types:
+      - Ingress
+
+    # preDNAT: Calico applique la policy AVANT la résolution DNAT du kube-proxy.
+    # Ça veut dire : on bloque l'IP source AVANT que le paquet ne soit redirigé
+    # vers le pod cible (typiquement nginx-ingress-controller). Indispensable
+    # pour bloquer du trafic entrant via NodePort / LoadBalancer.
+    #
+    # Contraintes (cf. Calico docs) :
+    #   • applyOnForward DOIT être true
+    #   • types DOIT contenir uniquement Ingress (pas d'Egress en preDNAT)
+    #
+    # eBPF dataplane : preDNAT fonctionne aussi, mais Calico recommande des
+    # policies normales (non-preDNAT) en mode eBPF (la DSR + le BPF socket
+    # rendent l'ordre des hooks différent). À tester selon votre setup ;
+    # mettre `preDNAT: false` + `applyOnForward: false` pour le mode eBPF
+    # standard.
+    preDNAT: true
+    applyOnForward: true
+
+    # doNotTrack : skip conntrack — utile uniquement pour des règles XDP très
+    # tôt (perf). NON recommandé ici : casse les connexions établies sortantes
+    # quand on autorise après coup.
+    doNotTrack: false
+
+    # order : priorité (float, plus petit = plus prioritaire). 100 = milieu de
+    # tableau, laisse de la place pour des deny plus stricts (order: 10) et
+    # des allow par-dessus (order: 1000).
+    order: 100
+
+  # ---------------------------------------------------------------------------
+  # HostEndpoints — interfaces de nœud auxquelles attacher la policy
+  # ---------------------------------------------------------------------------
+  # En Calico, une GlobalNetworkPolicy ne s'applique aux pods ou hôtes que via
+  # leur représentation `WorkloadEndpoint` (pods) ou `HostEndpoint` (hôte). Pour
+  # bloquer du trafic externe entrant sur les nœuds, il FAUT des HostEndpoints.
+  #
+  # Trois stratégies (au choix, voire combinables) :
+  #
+  #   1. AutoHostEndpoints (RECOMMANDÉ) — Calico les crée et maintient lui-même
+  #      pour TOUS les nœuds. Activer dans la ressource Calico globale :
+  #
+  #        kind: KubeControllersConfiguration
+  #        spec:
+  #          controllers:
+  #            node:
+  #              hostEndpoint:
+  #                autoCreate: Enabled
+  #
+  #      Les HostEndpoints auto sont labellisés avec `projectcalico.org/created-by:
+  #      calico-kube-controllers` + tous les labels du Node K8s. Adapter le
+  #      `policy.selector` ci-dessus en conséquence, par ex :
+  #         selector: "has(kubernetes.io/hostname)"
+  #
+  #   2. HostEndpoints créés manuellement par l'admin (hors chart). Ne rien
+  #      activer dans cette section, juste s'assurer qu'ils portent le label
+  #      attendu par `policy.selector`.
+  #
+  #   3. HostEndpoints templatés par CE chart (section ci-dessous). Pratique
+  #      pour un cluster simple à inventaire fixe. Désactivé par défaut.
+  hostEndpoints:
+    # `manage: true` → crée RBAC (CRD hostendpoints) + les ressources listées
+    # dans `entries`. Le label défini par `protectedLabel` est ajouté à chaque
+    # entry pour que `policy.selector` matche par défaut.
+    manage: false
+
+    # Label appliqué à toutes les entries gérées (matche le selector par défaut).
+    protectedLabel:
+      key: crowdsec-protected
+      value: "true"
+
+    # Liste des HostEndpoints à créer. Exemple :
+    # entries:
+    #   - name: node1-ext
+    #     node: node1
+    #     interfaceName: eth0
+    #     # expectedIPs optionnel — utile si interfaceName non spécifiée
+    #     expectedIPs: []
+    #     # labels additionnels (le protectedLabel est déjà injecté)
+    #     labels: {}
+    #     # profiles Calico optionnels
+    #     profiles: []
+    entries: []
+
+  # ---------------------------------------------------------------------------
+  # Job de registration auprès du LAPI
+  # ---------------------------------------------------------------------------
+  # Hook PostSync (sync-wave 3) qui INSERT dans la table `bouncers` du LAPI
+  # avec le hash sha512(apiKey) — équivalent à `cscli bouncers add`.
+  # Idempotent (ON CONFLICT UPDATE) — re-tournable si on régénère la clé.
+  registerJob:
+    enabled: true
+
+  # ---------------------------------------------------------------------------
+  # Pod-level configuration
+  # ---------------------------------------------------------------------------
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      memory: 256Mi
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+    readOnlyRootFilesystem: true
+
+  livenessProbe:
+    exec:
+      command:
+        - /bin/sh
+        - -c
+        - pgrep -f bouncer.py > /dev/null
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    failureThreshold: 3
+
+  podAnnotations: {}
+
+  # Variables d'env supplémentaires injectées dans le pod (override / extension).
+  extraEnv: []
+  # Examples:
+  #   - name: HTTP_PROXY
+  #     value: "http://proxy:3128"
+  #   - name: NO_PROXY
+  #     value: "127.0.0.1,.svc.cluster.local"
+
+  # HA hint : tolère d'être placé partout (y compris control-plane si pas de
+  # taint dédié), mais préfère se répartir.
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/component: calico-bouncer
+            topologyKey: kubernetes.io/hostname
+
+  nodeSelector: {}
+  tolerations: []
+
+# =============================================================================
+#  NetworkPolicy — isolation réseau du namespace
+# =============================================================================
+# Une politique unique appliquée à TOUS les pods du namespace (LAPI, agent,
+# Postgres, PgBouncer, WebUI, jobs).
+#
+# Autorisations par défaut :
+#   • Ingress  : intra-namespace (tout pod peut joindre tout pod du même ns)
+#                + trafic entrant sur le port du service WebUI depuis n'importe
+#                  quelle source (auth gérée par le pod : login natif + SSO OIDC
+#                  depuis l'image 2026.7.x). Toggle : allowWebuiIngress.
+#   • Egress   : intra-namespace + DNS (UDP/TCP 53) + HTTPS (TCP 443 et 6443)
+#       └─ 443  : hub.crowdsec.net, api.crowdsec.net, kube-apiserver (managed)
+#       └─ 6443 : kube-apiserver (kubeadm/k3s, quand le CNI évalue NP après DNAT)
+#
+# Tout autre trafic est bloqué (deny-by-default une fois activée).
+# Pour autoriser d'autres sources externes (bouncer → LAPI, scraper métriques,
+# etc.), remplir extraIngress / extraEgress ci-dessous.
+networkPolicy:
+  enabled: true
+
+  # Autorise n'importe quelle source à joindre le pod WebUI sur son port de
+  # service. Safe depuis l'image WebUI 2026.7.x : l'auth est appliquée dans le
+  # pod lui-même (login natif + OIDC SSO optionnel), donc pas besoin de
+  # restreindre au niveau réseau. Passer à `false` pour revenir à un contrôle
+  # explicite via extraIngress (utile en zero-trust / segmentation stricte).
+  allowWebuiIngress: true
+
+  # Génère une NetworkPolicy secondaire ciblant les pods de résolution HTTP-01
+  # de cert-manager (label `acme.cert-manager.io/http01-solver: "true"`),
+  # ouvrant leur ingress à toute source. Nécessaire si tu émets des
+  # certificats ACME via un Ingress dans ce namespace : sans cette exception,
+  # la NP principale (podSelector: {}) bloque le trafic entrant vers les pods
+  # solver et le challenge ACME timeoute côté Let's Encrypt / autre CA.
+  allowCertManagerHttp01Solver: true
+
+  # Additional ingress rules appended to the intra-namespace allow.
+  # Standard NetworkPolicy ingress rule format — each entry is a rule object.
+  extraIngress: []
+  # Examples:
+  #
+  # Allow a bouncer pod (label-based) from another namespace to reach LAPI:
+  #   - from:
+  #       - namespaceSelector:
+  #           matchLabels:
+  #             kubernetes.io/metadata.name: my-app
+  #         podSelector:
+  #           matchLabels:
+  #             app: my-bouncer
+  #     ports:
+  #       - protocol: TCP
+  #         port: 8080
+  #
+  # Allow the ingress controller specifically (if allowWebuiIngress is false):
+  #   - from:
+  #       - namespaceSelector:
+  #           matchLabels:
+  #             kubernetes.io/metadata.name: ingress-controller
+  #     ports:
+  #       - protocol: TCP
+  #         port: 3000
+
+  # Additional egress rules appended to the DNS + HTTPS defaults.
+  extraEgress: []
+  # Example — allow HTTP (port 80) for any fallback mirror:
+  #   - ports:
+  #       - protocol: TCP
+  #         port: 80
+
+# =============================================================================
+#  secrets — override des mots de passe générés
+# =============================================================================
+# Par défaut, le chart génère les mots de passe internes (PgBouncer, LAPI,
+# WebUI) de façon déterministe à partir de (namespace, release) via sha256.
+# C'est stable entre chaque render (nécessaire pour qu'ArgoCD n'échoue pas la
+# Sync sur le Secret immutable) et repris tel quel si le Secret existe déjà en
+# base au moment d'un `helm install/upgrade` CLI (via `lookup`).
+#
+# Pour fournir tes propres mots de passe (rotation, hardening, ingestion depuis
+# un vault externe), les surcharger ici. Chaque clé remplace la valeur dérivée
+# pour ce role uniquement.
+secrets:
+  overrides: {}
+    # pgbouncerAdminPassword: "..."
+    # crowdsecPassword: "..."
+    # webuiPassword: "..."

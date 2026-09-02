@@ -1,0 +1,122 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "crowdsec-all-in-one.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crowdsec-all-in-one.labels" . | nindent 4 }}
+spec:
+  # Applies to every pod in the release namespace (LAPI, agent, PostgreSQL,
+  # PgBouncer, WebUI, hook jobs, …).
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # ── Intra-namespace ───────────────────────────────────────────────────────
+    # All components can receive traffic from any other pod in the same namespace.
+    - from:
+        - podSelector: {}
+
+    # ── WebUI: reachable from anywhere on its service port ───────────────────
+    # Safe since image 2026.7.x — auth is enforced at the pod level (native
+    # login + optional OIDC SSO). No need for the caller to sit in a specific
+    # namespace or carry a specific label. Set networkPolicy.allowWebuiIngress
+    # to false to lock this down and route the ingress controller via
+    # extraIngress instead.
+    {{- if .Values.networkPolicy.allowWebuiIngress }}
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.webui.service.port }}
+    {{- end }}
+
+    # ── cert-manager HTTP-01 solver pods ─────────────────────────────────────
+    # cert-manager crée dynamiquement des pods de résolution HTTP-01 dans le
+    # namespace de l'Ingress qui demande le cert. Ces pods portent le label
+    # `acme.cert-manager.io/http01-solver: "true"` et doivent être joignables
+    # par l'ingress controller pour que le challenge ACME aboutisse.
+    #
+    # Cette règle est une exception ciblée : elle laisse passer TOUT le trafic
+    # entrant vers CES pods (sur n'importe quel port, depuis n'importe quelle
+    # source). Sans cette règle, l'émission de nouveaux certificats échoue
+    # silencieusement (challenge timeout côté ACME).
+    #
+    # ⚠ NetworkPolicy.spec.podSelector étant scopé au niveau de la policy
+    # (pas par règle), on ne peut pas restreindre CETTE règle aux seuls pods
+    # solver depuis cette NP. C'est le rôle de la NetworkPolicy dédiée
+    # rendue plus bas (kind: NetworkPolicy #2).
+
+    # ── Custom rules ─────────────────────────────────────────────────────────
+    # Use networkPolicy.extraIngress to allow external sources:
+    #   • bouncer (other namespace) → LAPI (port 8080)
+    #   • custom scraper / metrics → any pod
+    {{- with .Values.networkPolicy.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+
+  egress:
+    # ── Intra-namespace ───────────────────────────────────────────────────────
+    # Agent → LAPI, LAPI → PgBouncer, PgBouncer → PostgreSQL, WebUI → LAPI, …
+    - to:
+        - podSelector: {}
+
+    # ── DNS ──────────────────────────────────────────────────────────────────
+    # Required by all pods for kube-dns service discovery.
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # ── HTTPS / Kubernetes API ────────────────────────────────────────────────
+    # • CrowdSec Hub (hub.crowdsec.net) — cscli hub update / collections install
+    # • CrowdSec Central API (api.crowdsec.net) — LAPI signal sharing
+    # • Kubernetes API server — kubectl in hook jobs
+    #   Port 443  : managed clusters (GKE, EKS, AKS) + kubernetes.default.svc
+    #               when the CNI evaluates NetworkPolicy before DNAT
+    #   Port 6443 : self-hosted clusters (kubeadm, k3s) when the CNI evaluates
+    #               NetworkPolicy after DNAT (Cilium, Calico in some modes)
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+
+    # ── Custom rules ──────────────────────────────────────────────────────────
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+---
+# NetworkPolicy dédiée aux pods de résolution HTTP-01 de cert-manager.
+# Ces pods sont créés dynamiquement dans le namespace de l'Ingress qui
+# demande un certificat (donc potentiellement le nôtre) et doivent être
+# joignables par l'ingress controller pour valider le challenge ACME.
+# Sans cette NP, la NP principale (podSelector: {}) bloque le trafic entrant
+# vers ces pods et cert-manager échoue à émettre les certificats.
+{{- if .Values.networkPolicy.allowCertManagerHttp01Solver }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "crowdsec-all-in-one.fullname" . }}-cert-manager-http01-solver
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crowdsec-all-in-one.labels" . | nindent 4 }}
+spec:
+  # Ne cible QUE les pods solver de cert-manager (label appliqué par le
+  # cert-manager controller lui-même sur les pods qu'il spawne).
+  podSelector:
+    matchLabels:
+      acme.cert-manager.io/http01-solver: "true"
+  policyTypes:
+    - Ingress
+  # Ingress ouvert (any source, any port) : cert-manager écoute sur un port
+  # aléatoire configuré par le pod, donc pas d'intérêt à restreindre le port ;
+  # la source (ingress controller) varie selon la topologie et peut être
+  # ClusterFirst-résolue en interne. Ces pods sont éphémères (durée de vie
+  # limitée au challenge).
+  ingress:
+    - {}
+{{- end }}
+{{- end }}

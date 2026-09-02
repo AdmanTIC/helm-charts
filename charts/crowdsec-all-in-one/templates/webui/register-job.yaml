@@ -1,0 +1,117 @@
+{{- if .Values.webui.registerJob.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "crowdsec-all-in-one.fullname" . }}-register-webui
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crowdsec-all-in-one.labels" . | nindent 4 }}
+    app.kubernetes.io/component: register-webui
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
+    "argocd.argoproj.io/hook": PostSync
+    "argocd.argoproj.io/sync-wave": "3"
+    "argocd.argoproj.io/hook-delete-policy": BeforeHookCreation
+    # Force+Replace : Jobs sont immutables → seul `kubectl replace --force`
+    # (delete+recreate atomique) fait passer un spec update.
+    "argocd.argoproj.io/sync-options": Force=true,Replace=true
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "crowdsec-all-in-one.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: register-webui
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsUser: 0
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      containers:
+        - name: register-webui
+          image: "{{ .Values.webui.registerJob.image.repository }}:{{ .Values.webui.registerJob.image.tag }}"
+          imagePullPolicy: {{ .Values.webui.registerJob.image.pullPolicy }}
+          env:
+            # Connexion PostgreSQL (via PgBouncer)
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: crowdsec-secrets
+                  key: crowdsecUsername
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: crowdsec-secrets
+                  key: crowdsecPassword
+            - name: DB_NAME
+              value: crowdsec
+            - name: DB_HOST
+              value: crowdsec-pgbouncer
+            # Credentials de la machine webui à enregistrer dans LAPI
+            - name: WEBUI_USER
+              valueFrom:
+                secretKeyRef:
+                  name: crowdsec-secrets
+                  key: webuiUsername
+            - name: WEBUI_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: crowdsec-secrets
+                  key: webuiPassword
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+
+              # --- Attente que PostgreSQL soit joignable ---
+              echo "[register-webui] Waiting for PostgreSQL to be ready..."
+              until timeout 5 psql -h "$DB_HOST" -p 5432 -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1" > /dev/null 2>&1; do
+                echo "[register-webui] PostgreSQL not ready, retrying in 3s..."
+                sleep 3
+              done
+              echo "[register-webui] PostgreSQL is ready."
+
+              # --- Attente que le schema CrowdSec soit initialisé par le LAPI ---
+              echo "[register-webui] Waiting for CrowdSec schema (machines table)..."
+              until psql -h "$DB_HOST" -p 5432 -U "$DB_USER" -d "$DB_NAME" \
+                -c "SELECT 1 FROM machines LIMIT 1" > /dev/null 2>&1; do
+                echo "[register-webui] Schema not ready, retrying in 3s..."
+                sleep 3
+              done
+              echo "[register-webui] CrowdSec schema ready."
+
+              # --- pgcrypto ---
+              # initdb.scripts (values.yaml → postgres.initdb) ne s'exécute qu'à
+              # la 1re création du cluster : sur une BDD pré-existante l'extension
+              # peut manquer → gen_salt() introuvable. On la crée ici, idempotent.
+              # pgcrypto est "trusted" depuis PG13 → owner de la base suffit.
+              echo "[register-webui] Ensuring pgcrypto extension..."
+              psql -h "$DB_HOST" -p 5432 -U "$DB_USER" -d "$DB_NAME" \
+                -v ON_ERROR_STOP=1 \
+                -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+
+              # --- INSERT via pgcrypto (pas de dépendance réseau, pas d'apk) ---
+              # crypt(password, gen_salt('bf',10)) produit un hash $2a$10$... compatible
+              # avec golang.org/x/crypto/bcrypt que CrowdSec LAPI utilise pour vérifier.
+              # ON CONFLICT DO UPDATE : idempotent, remet à jour le hash si le secret a changé.
+              #
+              # NOTE: :'varname' de psql ne fonctionne PAS avec -c (psql envoie la chaîne
+              # directement au serveur sans interpolation). On utilise printf | psql comme
+              # l'original, avec échappement SQL des apostrophes via sed.
+              SAFE_USER=$(printf '%s' "$WEBUI_USER"     | sed "s/'/''/g")
+              SAFE_PASS=$(printf '%s' "$WEBUI_PASSWORD" | sed "s/'/''/g")
+              echo "[register-webui] Registering ${WEBUI_USER} machine in database..."
+              printf "INSERT INTO machines (created_at,updated_at,machine_id,password,ip_address,scenarios,is_validated,auth_type) VALUES (NOW(),NOW(),'%s',crypt('%s',gen_salt('bf',10)),'','',true,'password') ON CONFLICT (machine_id) DO UPDATE SET password=crypt('%s',gen_salt('bf',10)),updated_at=NOW(),is_validated=true;" \
+                "$SAFE_USER" "$SAFE_PASS" "$SAFE_PASS" \
+                | psql -h "$DB_HOST" -p 5432 -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1
+
+              echo "[register-webui] Done — ${WEBUI_USER} registered successfully."
+{{- end }}

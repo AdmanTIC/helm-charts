@@ -1,0 +1,164 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "crowdsec-all-in-one.fullname" . }}
+  labels:
+    {{- include "crowdsec-all-in-one.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "crowdsec-all-in-one.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.webui.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "crowdsec-all-in-one.labels" . | nindent 8 }}
+        {{- with .Values.webui.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.webui.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.webui.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          {{- with .Values.webui.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.webui.image.repository }}:{{ .Values.webui.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.webui.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.webui.service.port }}
+              protocol: TCP
+          env:
+            {{- /* Nom du service LAPI : même logique que crowdsec.fullname dans le sub-chart */ -}}
+            {{- $csFullname := ternary .Release.Name (printf "%s-crowdsec" .Release.Name) (contains "crowdsec" .Release.Name) }}
+            # -- LAPI connection (2026.7+ naming) ---------------------------------
+            - name: CONFIG_INSTANCE_LAPI_URL
+              value: "http://{{ $csFullname }}-service:8080"
+            - name: CONFIG_INSTANCE_LAPI_AUTH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: crowdsec-secrets
+                  key: webuiUsername
+            - name: CONFIG_INSTANCE_LAPI_AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: crowdsec-secrets
+                  key: webuiPassword
+            {{- if .Values.webui.sso.enabled }}
+            # OIDC SSO (image >= 2026.7.x) — env vars honorées a chaque
+            # demarrage, elles ecrasent la YAML config.
+            - name: CONFIG_AUTH_OIDC_ISSUER_URL
+              value: {{ .Values.webui.sso.oidc.issuerUrl | quote }}
+            - name: CONFIG_AUTH_OIDC_CLIENT_ID
+              value: {{ .Values.webui.sso.oidc.clientId | quote }}
+            - name: CONFIG_AUTH_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "webui.sso.secretName" . }}
+                  key: {{ .Values.webui.sso.oidc.existingSecretKey | default "clientSecret" }}
+            - name: CONFIG_AUTH_OIDC_SCOPE
+              value: {{ .Values.webui.sso.oidc.scope | quote }}
+            - name: CONFIG_AUTH_OIDC_GROUPS_CLAIM
+              value: {{ .Values.webui.sso.oidc.groupsClaim | quote }}
+            - name: CONFIG_AUTH_OIDC_UNMATCHED_ROLE
+              value: {{ .Values.webui.sso.oidc.unmatchedRole | quote }}
+            {{- range $i, $g := .Values.webui.sso.oidc.adminGroups }}
+            - name: CONFIG_AUTH_OIDC_ADMIN_GROUPS_{{ $i }}
+              value: {{ $g | quote }}
+            {{- end }}
+            {{- range $i, $g := .Values.webui.sso.oidc.readOnlyGroups }}
+            - name: CONFIG_AUTH_OIDC_READ_ONLY_GROUPS_{{ $i }}
+              value: {{ $g | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.webui.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            # -- Aliases legacy CROWDSEC_* → $(CONFIG_*) ------------------------
+            # Kubernetes resout `$(VAR)` au demarrage du container en piochant
+            # dans les envs precedemment declarees dans la liste. Ces alias
+            # permettent aux images pre-2026.7 (ou aux forks qui lisent encore
+            # les anciens noms) de fonctionner sans intervention. Ils sont
+            # inoffensifs sur les images recentes (envs ignorees).
+            - name: CROWDSEC_URL
+              value: "$(CONFIG_INSTANCE_LAPI_URL)"
+            - name: CROWDSEC_USER
+              value: "$(CONFIG_INSTANCE_LAPI_AUTH_USERNAME)"
+            - name: CROWDSEC_PASSWORD
+              value: "$(CONFIG_INSTANCE_LAPI_AUTH_PASSWORD)"
+            - name: CROWDSEC_ALERT_INCLUDE_CAPI
+              value: "$(CONFIG_CROWDSEC_ALERT_FILTERS_INCLUDE_CAPI)"
+            - name: CROWDSEC_ALERT_INCLUDE_ORIGIN_EMPTY
+              value: "$(CONFIG_CROWDSEC_ALERT_FILTERS_INCLUDE_ORIGIN_EMPTY)"
+            - name: CROWDSEC_SIMULATIONS_ENABLED
+              value: "$(CONFIG_CROWDSEC_SIMULATIONS_ENABLED)"
+            - name: CROWDSEC_LOOKBACK_PERIOD
+              value: "$(CONFIG_CROWDSEC_SYNC_LOOKBACK)"
+            - name: CROWDSEC_REFRESH_INTERVAL
+              value: "$(CONFIG_CROWDSEC_SYNC_REFRESH_INTERVAL)"
+            - name: CROWDSEC_IDLE_REFRESH_INTERVAL
+              value: "$(CONFIG_CROWDSEC_SYNC_IDLE_REFRESH_INTERVAL)"
+            - name: CROWDSEC_IDLE_THRESHOLD
+              value: "$(CONFIG_CROWDSEC_SYNC_IDLE_THRESHOLD)"
+            - name: CROWDSEC_BOOTSTRAP_RETRY_DELAY
+              value: "$(CONFIG_CROWDSEC_SYNC_BOOTSTRAP_RETRY_DELAY)"
+            - name: CROWDSEC_BOOTSTRAP_RETRY_ENABLED
+              value: "$(CONFIG_CROWDSEC_SYNC_BOOTSTRAP_RETRY_ENABLED)"
+          {{- with .Values.webui.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.webui.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.webui.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.webui.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.webui.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: data
+          {{- if .Values.webui.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "crowdsec-all-in-one.fullname" . }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- with .Values.webui.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.webui.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.webui.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.webui.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,105 @@
+{{- if and .Values.collectionsJob.enabled .Values.collectionsJob.agentRestartJob.enabled }}
+# ServiceAccount + Role + RoleBinding + Job pour restart le DaemonSet agent
+# après le hook install-collections (sync-wave 5 > 0).
+#
+# Rationale sur le split hook / regular :
+# - Le Job est un HOOK PostSync (Force+Replace, BeforeHookCreation) car son
+#   spec est immutable côté K8s ; il DOIT être recréé à chaque sync qui
+#   change quelque chose.
+# - La SA / Role / RoleBinding sont des ressources REGULAR (pas de hook
+#   annotations). ArgoCD les gère comme du RBAC classique : create au 1er
+#   sync, apply/patch sur les suivants. Ça évite le bug ArgoCD où
+#   `Force=true,Replace=true` combiné à `hook-delete-policy: BeforeHookCreation`
+#   sur des ressources RBAC produit un "already exists" au create après un
+#   delete raté (silencieusement).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "crowdsec-all-in-one.fullname" . }}-agent-restarter
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crowdsec-all-in-one.labels" . | nindent 4 }}
+  annotations:
+    # SSA + Force pour permettre à ArgoCD d'adopter les ressources
+    # préexistantes (versions précédentes du chart les créaient comme HOOKS
+    # avec un tracking ArgoCD différent) sans buter sur "already exists".
+    "argocd.argoproj.io/sync-options": ServerSideApply=true,Force=true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "crowdsec-all-in-one.fullname" . }}-agent-restarter
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crowdsec-all-in-one.labels" . | nindent 4 }}
+  annotations:
+    # SSA + Force pour permettre à ArgoCD d'adopter les ressources
+    # préexistantes (versions précédentes du chart les créaient comme HOOKS
+    # avec un tracking ArgoCD différent) sans buter sur "already exists".
+    "argocd.argoproj.io/sync-options": ServerSideApply=true,Force=true
+rules:
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "crowdsec-all-in-one.fullname" . }}-agent-restarter
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crowdsec-all-in-one.labels" . | nindent 4 }}
+  annotations:
+    # SSA + Force pour permettre à ArgoCD d'adopter les ressources
+    # préexistantes (versions précédentes du chart les créaient comme HOOKS
+    # avec un tracking ArgoCD différent) sans buter sur "already exists".
+    "argocd.argoproj.io/sync-options": ServerSideApply=true,Force=true
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "crowdsec-all-in-one.fullname" . }}-agent-restarter
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "crowdsec-all-in-one.fullname" . }}-agent-restarter
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "crowdsec-all-in-one.fullname" . }}-restart-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crowdsec-all-in-one.labels" . | nindent 4 }}
+    app.kubernetes.io/component: restart-agent
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+    "argocd.argoproj.io/hook": PostSync
+    "argocd.argoproj.io/sync-wave": "5"
+    "argocd.argoproj.io/hook-delete-policy": BeforeHookCreation
+    "argocd.argoproj.io/sync-options": Force=true,Replace=true
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "crowdsec-all-in-one.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: restart-agent
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "crowdsec-all-in-one.fullname" . }}-agent-restarter
+      containers:
+        - name: restart-agent
+          image: "{{ .Values.collectionsJob.agentRestartJob.image.repository }}:{{ .Values.collectionsJob.agentRestartJob.image.tag }}"
+          imagePullPolicy: {{ .Values.collectionsJob.agentRestartJob.image.pullPolicy }}
+          command:
+            - kubectl
+            - rollout
+            - restart
+            - daemonset/{{ .Release.Name }}-agent
+            - --namespace
+            - {{ .Release.Namespace }}
+{{- end }}
