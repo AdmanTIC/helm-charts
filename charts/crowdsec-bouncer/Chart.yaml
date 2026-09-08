@@ -1,0 +1,9 @@
+apiVersion: v2
+name: crowdsec-bouncer
+description: >-
+  Le bouncer CrowdSec de l'entrée publique : la page de vérification servie à l'humain
+  suspecté, et le middleware Traefik qui l'appelle. Chart LOCAL : ce sont nos propres
+  manifestes, aucun chart amont n'est emballé — le bouncer lui-même est un PLUGIN de
+  Traefik, déclaré dans sa configuration statique.
+type: application
+version: 0.1.0

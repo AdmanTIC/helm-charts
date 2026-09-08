@@ -1,0 +1,84 @@
+{{- if and .Values.middleware.enabled .Values.attach.enabled }}
+# ---------------------------------------------------------------------------
+#  L'ACCROCHAGE du bouncer : deux routeurs sur `websecure`, au-dessus du catch-all du WAF.
+#
+#  🛑 POURQUOI PAS SUR L'ENTRYPOINT, alors que c'était le plan (2026-09-02, 1re tentative).
+#     Un middleware d'entrypoint s'applique à TOUTES les requêtes de `websecure` — y compris
+#     celles vers le serveur de captcha lui-même. Un visiteur en décision « captcha » qui
+#     charge `<captcha.host>/assets/widget.js` recevait… la page captcha, en HTML,
+#     sans en-tête CORS : le widget ne se chargeait jamais, l'humain ne pouvait pas sortir de
+#     la remédiation. Le plugin n'a aucune option d'exclusion par hôte (ClientTrustedIPs ne
+#     joue que sur l'IP source). Le fournisseur de captcha DOIT donc être routé hors bouncer,
+#     et ça se décide au ROUTEUR, pas à l'entrypoint.
+#
+#  Le chart traefik-coraza pose `waf-catchall` (priorité 1 000 000, PathPrefix(`/`) → sidecar
+#  Coraza → entrypoint `internal` → Ingress applicatifs). On pose DEUX routeurs au-dessus, vers
+#  le MÊME service : le sandwich Coraza est conservé dans les deux cas.
+#
+#    bypass   priorité +2   Host(<captcha.host>)              sans bouncer
+#    bouncer  priorité +1   PathPrefix(`/`)                   middleware crowdsec-captcha
+#    (waf-catchall du chart, +0 : n'est plus atteint, reste comme filet si celui-ci disparaît)
+#
+#  ⚠️ `backend-down` reste un middleware d'ENTRYPOINT (charts/traefik-coraza) : il s'exécute
+#     donc AVANT ceux du routeur, c'est l'ordre voulu — il rattrape les 502/504 de la dorsale,
+#     pas les refus du bouncer.
+#
+#  ⚠️ Un routeur dont le middleware ne se résout pas est en erreur — mais LUI SEUL : le
+#     `waf-catchall` du chart reprend alors le trafic, sans bouncer. C'est l'autre raison de ce
+#     montage : l'échec dégrade au lieu de couper.
+# ---------------------------------------------------------------------------
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ .Values.attach.name }}-bypass
+  labels:
+    {{- include "crowdsec-bouncer.labels" . | nindent 4 }}
+  annotations:
+    # Vague 3 : APRÈS le Middleware (vague 2) qu'il nomme. Pointer un middleware qui
+    # n'existe pas encore met ce routeur en erreur — le trafic retombe alors sur le
+    # `waf-catchall` du chart, SANS bouncer, jusqu'à ce que l'objet apparaisse.
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      # Chaque entrée est un GABARIT rendu par `tpl` — l'entrée de série appelle
+      # `crowdsec-bouncer.captchaHost`, qui tient le domaine depuis `domain`. Une valeur
+      # écrite en dur passe aussi : `tpl` d'une chaîne sans accolades la rend telle quelle.
+      match: {{ range $i, $h := .Values.attach.bypassHosts }}{{ if $i }} || {{ end }}Host(`{{ tpl $h $ }}`){{ end }}
+      priority: {{ add .Values.attach.basePriority 2 }}
+      services:
+        - name: {{ .Values.attach.corazaService.name }}
+          port: {{ .Values.attach.corazaService.port }}
+          scheme: http
+          passHostHeader: true
+  tls: {}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ .Values.attach.name }}
+  labels:
+    {{- include "crowdsec-bouncer.labels" . | nindent 4 }}
+  annotations:
+    # Vague 3 : APRÈS le Middleware (vague 2) qu'il nomme. Pointer un middleware qui
+    # n'existe pas encore met ce routeur en erreur — le trafic retombe alors sur le
+    # `waf-catchall` du chart, SANS bouncer, jusqu'à ce que l'objet apparaisse.
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: PathPrefix(`/`)
+      priority: {{ add .Values.attach.basePriority 1 }}
+      middlewares:
+        - name: {{ include "crowdsec-bouncer.middlewareName" . }}
+      services:
+        - name: {{ .Values.attach.corazaService.name }}
+          port: {{ .Values.attach.corazaService.port }}
+          scheme: http
+          passHostHeader: true
+  tls: {}
+{{- end }}

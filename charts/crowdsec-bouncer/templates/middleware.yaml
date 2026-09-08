@@ -1,0 +1,116 @@
+{{- if .Values.middleware.enabled }}
+# ---------------------------------------------------------------------------
+#  Le middleware qui applique les décisions de CrowdSec.
+#
+#  🛑 IL NE FAIT RIEN TOUT SEUL. Trois morceaux doivent être en place, ET DANS CET ORDRE :
+#
+#     1. le PLUGIN doit être chargé par Traefik. C'est une déclaration de configuration
+#        STATIQUE (`experimental.plugins.bouncer` dans charts/traefik-coraza/values.yaml) :
+#        Traefik la lit au démarrage, télécharge le module, le compile en Yaegi. Un
+#        middleware qui nomme un plugin non chargé met le routeur en ERREUR ;
+#     2. la ConfigMap de la page et le Secret des clés doivent être MONTÉS dans le pod
+#        Traefik (`volumes:` des mêmes values) — le plugin lit des fichiers, pas des
+#        objets Kubernetes ;
+#     3. ce middleware doit être accroché : c'est l'IngressRoute `crowdsec-bouncer` de
+#        templates/ingressroute.yaml (`attach` dans values.yaml), un routeur catch-all sur
+#        `websecure` au-dessus de celui du WAF. 🛑 PAS À L'ENTRYPOINT : le bouncer y
+#        intercepterait aussi le serveur de captcha (constaté le 2026-09-02).
+#
+#  ⚠️ LES HÔTES ET LES URL SONT DES GABARITS, rendus par `tpl` : `{{ "{{ .Values.domain }}" }}` y
+#     porte le domaine, écrit une seule fois dans les values. Une chaîne sans accolades
+#     traverse `tpl` inchangée, une surcharge en dur marche donc aussi.
+#
+#  🛑 SUR `websecure`, JAMAIS SUR `internal`. C'est la couche la plus EXTERNE du sandwich
+#     Coraza : la seule qui voie l'IP réelle du client. Accroché à `internal`, le bouncer
+#     jugerait 127.0.0.1 — donc tout le monde, ou personne.
+# ---------------------------------------------------------------------------
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  # ⚠️ Nom suffixé de l'empreinte de la page — voir `crowdsec-bouncer.middlewareName` dans
+  # _helpers.tpl. Ce n'est pas `middleware.name` tel quel, et c'est voulu.
+  name: {{ include "crowdsec-bouncer.middlewareName" . }}
+  labels:
+    {{- include "crowdsec-bouncer.labels" . | nindent 4 }}
+  annotations:
+    # Vague 2 : APRÈS la ConfigMap (0) et le délai de propagation (hook, vague 1). Le plugin
+    # lit la page UNE FOIS, à la création de cette instance : si elle est créée avant que
+    # le kubelet ait poussé la nouvelle ConfigMap dans le pod, elle sert l'ANCIENNE page
+    # jusqu'au prochain changement (constaté le 2026-09-03 sur store01).
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  plugin:
+    # 🛑 CETTE CLÉ EST L'ALIAS DU PLUGIN dans la configuration statique de Traefik, pas un
+    # nom libre : `experimental.plugins.<alias>`. Les deux doivent dire le même mot.
+    {{ .Values.middleware.pluginAlias }}:
+      enabled: "true"
+
+      # `stream` : le bouncer garde une copie locale des décisions et la rafraîchit toutes
+      # les 60 s, au lieu d'interroger la LAPI à chaque requête. C'est le mode recommandé
+      # dès qu'il y a du trafic — en `live`, chaque requête publique ajoute un aller-retour.
+      crowdsecMode: stream
+      crowdsecLapiScheme: {{ .Values.lapi.scheme | quote }}
+      crowdsecLapiHost: {{ tpl .Values.lapi.host . | quote }}
+
+      # 🛑 LA CLÉ EST LUE DANS UN FICHIER, JAMAIS ÉCRITE ICI. Un `Middleware` est un objet
+      # Kubernetes ordinaire : sa configuration serait en clair dans ce dépôt et dans
+      # `kubectl get middleware -o yaml`. Le fichier vient du Secret monté dans le pod
+      # Traefik — voir values.yaml, § « Les trois secrets ».
+      crowdsecLapiKeyFile: {{ printf "%s/%s" .Values.secrets.mountPath .Values.secrets.lapiKeyFile | quote }}
+
+      # Ce que Traefik répond sur une décision « ban » : 403, avec NOTRE page — même charte
+      # que la 503 et que le captcha, texte court, aucune dépendance. Sans `banFilePath`, le
+      # plugin rend un 403 au corps vide.
+      remediationStatusCode: "403"
+      banFilePath: {{ printf "%s/ban.html" .Values.page.mountPath | quote }}
+
+      # --- Le captcha ------------------------------------------------------
+      # `custom` : ni hCaptcha, ni reCAPTCHA, ni Turnstile. Les trois sont des services
+      # tiers, et chacun ferait charger un script de Google ou de Cloudflare dans le
+      # navigateur d'un licencié. Ici tout vient de nos serveurs.
+      captchaProvider: custom
+
+      # Le script du widget, chargé par le NAVIGATEUR : c'est une URL publique.
+      captchaCustomJsUrl: {{ tpl .Values.captcha.jsURL . | quote }}
+
+      # La validation du jeton, faite par TRAEFIK : c'est une URL interne au cluster. Le
+      # plugin y POSTe `secret` + `response` en formulaire, et attend un JSON `{"success":
+      # true}` — ce que Cap rend exactement sur `/<siteKey>/siteverify`.
+      captchaCustomValidateUrl: {{ tpl .Values.captcha.validateURL . | quote }}
+
+      # Le nom du champ qui porte le jeton dans le POST. Le widget Cap, placé dans un
+      # `<form>`, injecte de lui-même un champ caché `cap-token` : c'est ce nom-là.
+      captchaCustomResponse: {{ .Values.captcha.responseField | quote }}
+
+      # Passé au gabarit comme `{{ "{{ .FrontendKey }}" }}`. Notre page ne s'en sert pas —
+      # elle pose un élément `<cap-widget>`, pas un `<div class="…">` — mais le plugin
+      # exige la clé pour rendre le gabarit.
+      captchaCustomKey: {{ .Values.captcha.frontendKey | quote }}
+
+      # Clé publique et clé secrète du site Cap, lues dans le même Secret monté.
+      captchaSiteKeyFile: {{ printf "%s/%s" .Values.secrets.mountPath .Values.secrets.captchaSiteKeyFile | quote }}
+      captchaSecretKeyFile: {{ printf "%s/%s" .Values.secrets.mountPath .Values.secrets.captchaSecretKeyFile | quote }}
+
+      # Combien de temps un captcha résolu vaut laissez-passer pour cette IP. 1800 s est le
+      # défaut du plugin. Trop court, on rejoue le contrôle à chaque navigation ; trop long,
+      # une IP partagée reste ouverte après le départ de l'humain qui l'a résolu.
+      captchaGracePeriodSeconds: {{ .Values.captcha.gracePeriodSeconds | quote }}
+
+      # Le gabarit de la page, monté depuis la ConfigMap voisine.
+      captchaFilePath: {{ printf "%s/captcha.html" .Values.page.mountPath | quote }}
+
+      logLevel: {{ .Values.logLevel | quote }}
+{{- if .Values.sonde.enabled }}
+
+      # --- La porte de la sonde -----------------------------------------------
+      # L'IP cliente peut être annoncée dans CET en-tête — pas X-Forwarded-For, que Traefik
+      # purge à l'entrée — et UNIQUEMENT depuis les sources listées : l'IP SNATée du nœud qui
+      # porte la sonde du bouncer. Tout le raisonnement : values.yaml, § « La porte de la
+      # sonde ».
+      forwardedHeadersCustomName: {{ .Values.sonde.headerName | quote }}
+      forwardedHeadersTrustedIPs:
+        {{- range .Values.sonde.forwardedHeadersTrustedIPs }}
+        - {{ . | quote }}
+        {{- end }}
+{{- end }}
+{{- end }}

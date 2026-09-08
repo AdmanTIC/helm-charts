@@ -1,0 +1,52 @@
+# ---------------------------------------------------------------------------
+#  La page de vérification, servie à la place de la réponse demandée quand CrowdSec a
+#  décidé « captcha » sur l'IP du visiteur.
+#
+#  🛑 CE N'EST PAS UNE PAGE D'ERREUR, et le ton en tient compte. Celui qui la reçoit est
+#     probablement un licencié derrière un partage d'adresse (4G, réseau de club, VPN
+#     d'entreprise) dont le voisin a scanné le site. On lui explique en une phrase ce qui
+#     se passe, on ne l'accuse pas, et on lui dit que le contrôle est local.
+#
+#  🛑 UN SEUL FICHIER, TOUT EN LIGNE — SAUF LE WIDGET, qui ne peut pas l'être. Même règle
+#     que la 503 : ni feuille de style ni logo servis à part. Le script du widget, lui, est
+#     nécessairement externe (il vient du serveur Cap, avec son WebAssembly) : c'est la
+#     seule dépendance réseau de la page, et elle est explicitement rattrapée — un widget
+#     qui ne se charge pas affiche un message, pas une case morte.
+#
+#  ⚠️ CE FICHIER EST UN TEMPLATE GO, rendu par le PLUGIN et non par Helm. Il porte donc des
+#     doubles accolades — `{{ .SiteKey }}`, `{{ .FrontendJS }}` — et c'est voulu. C'est
+#     l'exception à la règle posée sur la 503 voisine (« aucune double accolade »), et elle
+#     tient parce que `.Files.Get` ne rend PAS de template : les accolades traversent Helm
+#     intactes et n'ont de sens que pour le plugin.
+#
+#     🛑 Ne JAMAIS passer ce fichier par `tpl` : Helm chercherait `.SiteKey` dans les values
+#        et le rendu échouerait.
+#
+#  ⚠️ DES JETONS Y SONT SUBSTITUÉS, et par `replace`, pas par `tpl` : `__ORGANIZATION__` (le
+#     nom de l'organisation) et `__CAPTCHA_ORIGIN__` (l'origine du serveur Cap, chargée deux
+#     fois par la page — le widget et son WebAssembly). Ni le nom ni le domaine ne s'écrivent
+#     donc dans ces fichiers : ils viennent de `organization`, `domain` et `captcha.host` dans
+#     les values. La liste des jetons et le pourquoi du `replace` : _helpers.tpl.
+#
+#  ✅ MODIFIER LE TEXTE NE COUPE RIEN. Traefik sert la page depuis un volume que kubelet
+#     resynchronise en une minute environ, et le plugin relit le fichier — aucun
+#     redémarrage requis.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.page.configMapName }}
+  labels:
+    {{- include "crowdsec-bouncer.labels" . | nindent 4 }}
+  annotations:
+    # Vague 0 : la page d'abord, le Middleware qui la lit en vague 2, et entre les deux le
+    # délai de propagation (templates/hook-wait-page.yaml). Voir ce fichier.
+    argocd.argoproj.io/sync-wave: "0"
+data:
+  captcha.html: |
+{{ include "crowdsec-bouncer.captchaPage" . | indent 4 }}
+  # La page du « ban » : même charte, aucun widget, aucune dépendance réseau. Servie avec le
+  # statut `remediationStatusCode` (403). Le plugin y injecte `{{ .ClientIP }}`. Elle porte
+  # `__ORGANIZATION__`, pas d'origine de captcha — d'où un helper distinct.
+  ban.html: |
+{{ include "crowdsec-bouncer.banPage" . | indent 4 }}

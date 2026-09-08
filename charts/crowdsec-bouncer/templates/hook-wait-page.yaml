@@ -1,0 +1,63 @@
+{{- if .Values.middleware.enabled }}
+# ---------------------------------------------------------------------------
+#  Le DÉLAI entre la ConfigMap et le Middleware qui la lit.
+#
+#  🛑 POURQUOI UN JOB QUI DORT. Le plugin lit `captchaFilePath` UNE FOIS, à la création de
+#     l'instance du middleware, et garde le template en mémoire. Argo CD applique la
+#     ConfigMap et le Middleware dans la même seconde ; Traefik crée l'instance en ~2 s ;
+#     mais le kubelet met jusqu'à 60 s (sa période de synchronisation) à pousser la nouvelle
+#     ConfigMap dans le pod. Résultat, constaté le 2026-09-03 sur store01 : un middleware
+#     tout neuf qui sert l'ANCIENNE page — et la gardera jusqu'au prochain changement.
+#
+#     Argo CD n'entame une vague qu'une fois la précédente saine, et un crochet `Sync` est
+#     attendu jusqu'à son terme. Ce Job, en vague 1, dort donc le temps de la propagation :
+#     la ConfigMap (vague 0) est dans le pod quand le Middleware (vague 2) est créé.
+#
+#  ⚠️ COÛT : +{{ .Values.page.propagationDelaySeconds }} s à CHAQUE synchronisation de cette Application, page changée ou non —
+#     un crochet `Sync` s'exécute à chaque opération. L'Application ne bouge que quand on la
+#     touche ; c'est acceptable. `HookSucceeded` : le Job est supprimé une fois fini, il ne
+#     s'accumule pas.
+#
+#  ⚠️ Ce n'est PAS une vérification (rien ne lit le fichier dans les pods Traefik : il
+#     faudrait un ServiceAccount avec `pods/exec`, disproportionné). C'est une attente
+#     dimensionnée sur la période du kubelet, avec de la marge.
+# ---------------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Values.middleware.name }}-wait-page
+  labels:
+    {{- include "crowdsec-bouncer.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "crowdsec-bouncer.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: wait
+          image: {{ .Values.page.waitImage }}
+          command: ["sleep", {{ .Values.page.propagationDelaySeconds | quote }}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { memory: 32Mi }
+{{- end }}

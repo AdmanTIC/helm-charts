@@ -1,0 +1,310 @@
+# Values du chart LOCAL `crowdsec-bouncer`, consommées par apps/crowdsec-bouncer.yaml.
+#
+# Rendu hors Argo CD :
+#   helm template crowdsec-bouncer charts/crowdsec-bouncer -n ingress | less
+#
+# ═══════════════════════════════════════════════════════════════════════════
+#  🛑 LE BOUNCER EST ÉTEINT. C'est l'état demandé, et c'est celui de ce fichier.
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# En l'état, ce chart ne pose QU'UN objet : la ConfigMap de la page de vérification. Rien
+# n'inspecte le trafic, rien n'est refusé, rien ne change pour un visiteur. Le reste — le
+# middleware, le plugin, les montages — est écrit, commenté, et attend une décision.
+#
+# ─── CE QU'EST UN « BOUNCER », ET OÙ IL VIT ─────────────────────────────────
+#
+# CrowdSec sépare la DÉCISION de son APPLICATION. L'agent lit les journaux et décide ; le
+# bouncer applique. Ici le bouncer n'est pas un composant à part : c'est un PLUGIN de
+# Traefik (`maxlerebourg/crowdsec-bouncer-traefik-plugin`), donc du code qui tourne DANS le
+# processus Traefik, interprété par Yaegi.
+#
+# ⚠️ CE QUE CELA COÛTE, ET IL FAUT LE SAVOIR AVANT D'ALLUMER : un plugin Traefik est
+#    TÉLÉCHARGÉ ET COMPILÉ AU DÉMARRAGE, depuis plugins.traefik.io puis GitHub. Un nœud
+#    edge sans sortie Internet au démarrage n'aurait PLUS DE TRAEFIK — donc plus d'entrée
+#    publique sur ce nœud. C'est le même genre de dépendance que l'initContainer qui
+#    compile Caddy pour Coraza, et elle s'ajoute à elle.
+#
+#    C'est LA raison pour laquelle la déclaration du plugin reste commentée dans
+#    charts/traefik-coraza/values.yaml tant qu'on ne s'en sert pas : on n'ajoute pas une
+#    dépendance de démarrage à l'entrée publique pour du code inerte.
+#
+# ─── LES TROIS REMÉDIATIONS, ET CELLE QU'ON VEUT ────────────────────────────
+#
+#   ban      la requête est refusée, 403, fin. Efficace et brutal : derrière une IP
+#            partagée (4G, réseau d'un club, VPN d'entreprise), il coupe aussi les innocents.
+#   captcha  la requête est suspendue le temps d'un contrôle. L'humain passe, l'automate
+#            non. C'est CE QUI EST DEMANDÉ ICI.
+#   bypass   rien.
+#
+# La remédiation est décidée par les PROFILS de CrowdSec (`config.profiles.yaml` du chart
+# crowdsec), pas par ce fichier. Ce chart dit seulement COMMENT appliquer un « captcha ».
+#
+# ═══════════════════════════════════════════════════════════════════════════
+#  LE FOURNISSEUR DE CAPTCHA : Cap (cap.js), auto-hébergé
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# ✅ POURQUOI CELUI-LÀ. Le plugin connaît hCaptcha, reCAPTCHA et Turnstile — trois services
+#    TIERS. Chacun ferait charger un script de Google ou de Cloudflare dans le navigateur
+#    d'un licencié, et lui ferait résoudre une énigme pour le compte d'un tiers. Le plugin
+#    accepte aussi un fournisseur `custom`, décrit par quatre paramètres seulement, et c'est
+#    par là que passe une solution à nous.
+#
+#    Cap (https://capjs.js.org, Apache-2.0) est une PREUVE DE TRAVAIL : le navigateur
+#    calcule des SHA-256 pendant quelques secondes, sans énigme visuelle, sans image à
+#    cliquer, sans traceur. Le mode « standalone » se déploie chez nous.
+#
+# ✅ CE QUI A ÉTÉ VÉRIFIÉ, et c'est le point qui décidait de la faisabilité — les deux bouts
+#    du contrat `custom` s'emboîtent, sans adaptateur :
+#
+#      côté plugin   `captcha.Validate()` POSTe `secret` + `response` en
+#                    `application/x-www-form-urlencoded` et attend un corps JSON
+#                    `{"success": bool}` avec un `Content-Type: application/json`
+#                    (pkg/captcha/captcha.go) ;
+#      côté Cap      `POST /<siteKey>/siteverify` lit `secret` et `response` dans le corps
+#                    (Elysia accepte JSON comme formulaire), et répond `{"success": true}`
+#                    (standalone/src/siteverify.js).
+#
+#      côté page     le widget Cap, placé dans un `<form>`, injecte de lui-même un champ
+#                    caché `cap-token` — le `captchaCustomResponse` ci-dessous.
+#
+# 🚧 CE QUI MANQUE ENCORE, et ce n'est pas rien — trois choses, toutes hors de ce chart :
+#
+#      1. LE SERVEUR CAP N'EST PAS DÉPLOYÉ. Il lui faut un Valkey/Redis (il y stocke les
+#         défis et les jetons), un volume, et un Ingress PUBLIC : le navigateur du visiteur
+#         doit joindre le widget et l'API des défis, sur l'hôte de `captcha.host` ci-dessous
+#         — que le rendu de la ConfigMap substitue dans files/captcha.html.
+#      2. LA CLÉ DE SITE SE CRÉE À LA MAIN, dans l'IHM de Cap ; elle n'est pas déclarative.
+#         Elle donne un couple clé publique / clé secrète, à porter en SopsSecret.
+#      3. LE SERVEUR D'ACTIFS DE CAP (`ENABLE_ASSETS_SERVER=true`) va chercher le widget et
+#         le WebAssembly sur jsdelivr AU DÉMARRAGE pour les servir ensuite lui-même. Le
+#         visiteur ne joint donc aucun CDN — mais notre serveur, lui, en dépend une fois
+#         par jour. `CACHE_HOST` permet de le rediriger si on veut couper ce lien aussi.
+#
+# ═══════════════════════════════════════════════════════════════════════════
+#  ALLUMER LE BOUNCER — la procédure, dans l'ordre
+# ═══════════════════════════════════════════════════════════════════════════
+#
+#   1. Déployer Cap, créer une clé de site, relever la clé publique et la clé secrète.
+#   2. Déclarer un bouncer auprès de CrowdSec et relever sa clé d'API :
+#        kubectl --context prod -n crowdsec exec deploy/crowdsec-lapi -- cscli bouncers add traefik-store01
+#      🛑 SUR LE CLUSTER OVH : la LAPI est là-bas, pas ici.
+#   3. Porter les TROIS clés en SopsSecret dans le namespace `ingress` (voir § suivant),
+#      et synchroniser.
+#   4. Décommenter, dans charts/traefik-coraza/values.yaml : le bloc
+#      `experimental.plugins.bouncer` ET les deux `volumes` (page + secrets).
+#      🛑 Ce rollout recompile Caddy : ~5 min, et avec UN SEUL nœud edge c'est une
+#         COUPURE de l'entrée publique de ce cluster, pas un roulement.
+#   5. Passer `middleware.enabled` à `true` ici, et synchroniser. Le middleware existe,
+#      mais rien ne l'appelle encore.
+#   6. L'accrocher — et c'est le geste qui allume vraiment. Voir `middleware.attach`.
+#
+# ⚠️ COMMENCER PAR UN SEUL INGRESS, PAS PAR L'ENTRYPOINT. Un middleware d'entrypoint mal
+#    résolu met en erreur TOUS les routeurs publics d'un coup. Sur un Ingress, un faux pas
+#    ne coûte qu'un service.
+#
+# ─── Les trois secrets ──────────────────────────────────────────────────────
+#
+# 🛑 AUCUNE CLÉ N'EST ÉCRITE DANS CE DÉPÔT EN CLAIR, et le plugin le permet : chaque
+#    paramètre sensible a une variante `…File`, lue dans un fichier du pod Traefik. Le
+#    Secret est donc monté, jamais recopié dans le `Middleware` — qui, lui, se lit en clair
+#    dans un `kubectl get middleware -o yaml`.
+#
+#    Le Secret est produit par un `SopsSecret` chiffré auprès de ces values, sur le modèle
+#    des autres composants. Il porte trois clés, dont les noms sont ceux ci-dessous.
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  L'IDENTITÉ DE LA PLATEFORME — écrite ICI, et NULLE PART AILLEURS
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Deux valeurs, un seul endroit à changer pour une autre plateforme : le NOM affiché au
+# visiteur, et le DOMAINE. Ni l'un ni l'autre n'est écrit en dur dans les pages HTML.
+#
+# Le nom voyage par SUBSTITUTION DE JETON (`__ORGANIZATION__`, remplacé au rendu de la
+# ConfigMap) : les pages sont des templates du PLUGIN, `tpl` y échouerait sur `.SiteKey` et
+# `.ClientIP`. Le domaine, lui, voyage par `tpl` : tous les hôtes et toutes les URL de ce
+# chart sont des GABARITS Go portant `{{ .Values.domain }}` — plus les deux origines de
+# files/captcha.html, substituées comme le nom (jeton `__CAPTCHA_ORIGIN__`).
+#
+# ⚠️ CE QUE LE NOM N'EMPORTE PAS. Trois choses restent en dur dans files/*.html, et c'est
+#    assumé : le LOGO (un PNG en base64, en ligne dans la page — aucune dépendance réseau,
+#    c'est la règle de ces pages), la COULEUR de charte (#003da5), et le nom du service à
+#    contacter (« Support technique fédéral »). Un rebranding complet passe par les fichiers.
+#
+# ✅ CE QUE ÇA CHANGE AU MIDDLEWARE : rien tant que ces valeurs ne bougent pas. Si l'une
+#    bouge, l'empreinte des pages RENDUES change, donc le nom du Middleware change, donc le
+#    plugin relit les pages — c'est exactement le comportement voulu (voir _helpers.tpl).
+#
+# Le nom de l'organisation, tel que le visiteur le lit : le titre de l'onglet, le texte
+# alternatif du logo, et la phrase de la page captcha qui lui dit que le contrôle tourne sur
+# NOS serveurs — pas chez Google ni chez Cloudflare. C'est le seul endroit où il s'écrit.
+organization: CrowdSec
+
+# 🛑 LE DOMAINE. Voir ci-dessus pour le mécanisme.
+#
+# ⚠️ CE QUE ÇA IMPOSE AUX SURCHARGES D'HÔTES ET D'URL : ce sont des gabarits, pas des chaînes
+#    opaques. Une surcharge qui écrit un hôte en dur marche quand même — `tpl` d'une chaîne
+#    sans double accolade rend cette chaîne — mais une accolade non fermée fait ÉCHOUER le
+#    rendu de l'Application entière, pas seulement de cet objet.
+#    ⚠️ `organization`, lui, N'EST PAS un gabarit : c'est du texte, recopié tel quel dans la
+#       page. Des accolades y resteraient visibles à l'écran.
+domain: custom-organization.local
+
+# ─── Ce que le chart pose AUJOURD'HUI ───────────────────────────────────────
+page:
+  # La ConfigMap qui porte la page. 🛑 RÉFÉRENCÉE AILLEURS : la renommer impose de reporter
+  # le nom dans le `volumes:` de charts/traefik-coraza/values.yaml.
+  configMapName: crowdsec-captcha-page
+  # Où Traefik la monte. Doit rester d'accord avec le même `volumes:`.
+  mountPath: /captcha
+  # Le délai laissé au kubelet pour pousser une ConfigMap modifiée dans les pods Traefik,
+  # AVANT que le Middleware qui la lit ne soit (re)créé — voir templates/hook-wait-page.yaml.
+  # Période de synchronisation du kubelet : 60 s ; 90 laisse de la marge.
+  propagationDelaySeconds: 90
+  waitImage: busybox:1.37
+
+# ─── Ce que le chart pose QUAND ON L'ALLUME ─────────────────────────────────
+middleware:
+  # 🛑 L'INTERRUPTEUR. À `false`, ce chart ne rend QUE la ConfigMap ci-dessus.
+  # Passé à `true` le 2026-09-02, après que le plugin et les montages ont atteint Traefik.
+  enabled: true
+
+  # PRÉFIXE du nom de l'objet Middleware : le nom réel est suffixé des 8 premiers caractères
+  # de l'empreinte de files/captcha.html (`crowdsec-captcha-02969fd1`), pour que chaque
+  # changement de page recrée le middleware et fasse relire le fichier au plugin — voir
+  # _helpers.tpl. Conséquence : ne JAMAIS référencer ce middleware par son nom depuis un
+  # autre chart (annotation d'Ingress, argument d'entrypoint) : il change. Seule
+  # l'IngressRoute de ce chart le nomme.
+  name: crowdsec-captcha
+
+  # 🛑 DOIT ÊTRE L'ALIAS DU PLUGIN dans `experimental.plugins.<alias>` de la configuration
+  # statique de Traefik. Les deux mots doivent être le même.
+  pluginAlias: bouncer
+
+# ─── L'accrochage : deux routeurs au-dessus du catch-all du WAF ────────────────
+# 🛑 PAS À L'ENTRYPOINT — le bouncer y intercepterait aussi le serveur de captcha, et un
+#    visiteur en remédiation ne pourrait jamais charger le widget (constaté le 2026-09-02,
+#    erreur CORS sur widget.js). Explication complète en tête de templates/ingressroute.yaml.
+attach:
+  enabled: true
+  name: crowdsec-bouncer
+  # Les hôtes routés SANS bouncer : le fournisseur de captcha (sur le cluster OVH — ici cet
+  # hôte n'est servi par aucun Ingress, le routeur ne matche donc jamais ; il est gardé pour
+  # que les deux charts restent identiques), et rien d'autre. Un hôte
+  # ajouté ici n'est plus protégé par CrowdSec — Coraza, lui, continue de l'inspecter.
+  bypassHosts:
+    - '{{ include "crowdsec-bouncer.captchaHost" . }}'
+  # La priorité du `waf-catchall` de traefik-coraza (`catchAll.priority`). Nos deux routeurs
+  # sont à +1 et +2 : ils passent devant, vers le même service. Si cette valeur change dans
+  # le chart amont, la reporter ici — sinon nos routeurs passent DERRIÈRE et le bouncer
+  # est inerte sans que rien ne le dise.
+  basePriority: 1000000
+  # Le Service ExternalName → localhost du sidecar Coraza, posé par traefik-coraza
+  # (`coraza.service.name`, port 8090). Même namespace, pas de `namespace:` à écrire.
+  corazaService:
+    name: coraza
+    port: 8090
+
+# Verbosité du plugin dans les journaux de Traefik. `INFO` de série ; `DEBUG` dit pourquoi
+# une IP est jugée comme elle l'est — utile les premiers jours, bavard ensuite.
+logLevel: INFO
+
+# ─── La porte de la sonde : un en-tête de confiance, depuis UN nœud ─────────────
+#
+# POURQUOI. Un bouncer en mode stream peut perdre durablement une décision sans rien dire
+# (constaté sur la prod les 2026-09-03 et 04 : le `deleted` d'une décision courte purge du
+# cache du plugin TOUTE l'IP, bans longs compris, et le flux ne ré-annonce jamais). La sonde
+# (Application `crowdsec-sonde`, namespace `crowdsec`) pose donc un ban de test et VÉRIFIE
+# le 403 sur le Traefik d'edge1 — puis sa levée.
+#
+# 🛑 ELLE NE PEUT PAS BANNIR SA PROPRE IP : Calico SNATe la sortie du réseau de pods,
+#    Traefik (hostNetwork) voit l'IP DU NŒUD porteur — mesuré sur la prod le 2026-09-04.
+#    Bannir une IP de nœud couperait de vrais flux.
+#
+# ✅ D'OÙ CE MÉCANISME, le même que sur la prod (apps-argocd, même section) : la sonde
+#    annonce une IP de TEST (192.0.2.x, TEST-NET-1, jamais routée) dans un en-tête que le
+#    plugin ne croit QUE depuis le nœud de la sonde. Deux options du plugin, ensemble :
+#      forwardedHeadersTrustedIPs  QUI a le droit de porter l'en-tête (l'IP SNATée du nœud) ;
+#      forwardedHeadersCustomName  LEQUEL — un nom à nous, pas X-Forwarded-For : Traefik
+#                                  purge les en-têtes Forwarded des sources non listées dans
+#                                  SA config statique, un nom custom passe sans rollout.
+#    Pour tout le reste du trafic, rien ne change : personne d'autre n'émet cet en-tête, et
+#    une tentative depuis Internet vient d'une IP non listée — en-tête ignoré.
+#
+# ⚠️ REVERS ASSUMÉ : un pod du nœud listé peut usurper une IP cliente auprès du bouncer
+#    (pas de Coraza ni des applications). Nos pods, un seul nœud, jugé acceptable.
+sonde:
+  enabled: true
+  # L'IP SNATée des pods du nœud qui porte la sonde — `worker1` (10.40.0.41). Doit rester
+  # d'accord avec le `nodeName` de charts/crowdsec-sonde/values.yaml.
+  forwardedHeadersTrustedIPs:
+    - 10.40.0.41/32
+  # Le nom de l'en-tête. Recopié dans charts/crowdsec-sonde/values.yaml (`headerName`).
+  headerName: X-Sonde-Bouncer-Ip
+
+lapi:
+  # 🛑 LA LAPI N'EST PAS SUR CE CLUSTER : elle est sur le cluster OVH, une seule pour les deux
+  # plateformes (décidé le 2026-09-02). Le bouncer de ce Traefik l'interroge donc par
+  # INTERNET, en HTTPS, sur l'Ingress `crowdsec-lapi.<domain>` — dont l'`ipAllowList`
+  # admet l'IP publique de store01 (apps-argocd/charts/crowdsec-access/values.yaml).
+  #
+  # ⚠️ En mode `stream`, la copie locale des décisions survit à une coupure : une LAPI
+  # injoignable ne fait pas tomber le bouncer, elle le fige sur ses dernières décisions.
+  #
+  # ⚠️ HÔTE ET PORT DANS LA MÊME CHAÎNE — pas de champ `port` séparé. `:443` explicite.
+  scheme: https
+  # host: 'crowdsec-lapi.{{ .Values.domain }}:443'
+  host: ""
+
+captcha:
+  # 🛑 L'HÔTE DU SERVEUR CAP, source unique. Trois consommateurs, tous rendus depuis cette
+  # valeur : le routeur de contournement (`attach.bypassHosts`), les deux origines de
+  # files/captcha.html, et les deux URL ci-dessous que l'exploitant recopie en allumant.
+  # Gabarit : le domaine vient de `domain`, le sous-domaine s'écrit ici.
+  host: 'captcha.{{ .Values.domain }}'
+
+  # URL PUBLIQUE du script du widget : c'est le navigateur du visiteur qui la charge. Servie
+  # par le serveur d'actifs de Cap, donc par nous — pas par un CDN.
+  # jsURL: 'https://{{ include "crowdsec-bouncer.captchaHost" . }}/assets/widget.js'
+  jsURL: ""
+
+  # URL de validation, appelée par TRAEFIK de serveur à serveur.
+  #
+  # 🛑 PUBLIQUE ICI, ET C'EST LA DIFFÉRENCE AVEC LE CLUSTER OVH. Le serveur Cap n'est pas
+  # sur ce cluster : il n'y a qu'une instance, et elle vit là où vit le trafic public
+  # principal. Traefik l'atteint donc par Internet, en sortie — la sortie n'étant pas
+  # filtrée ici, il n'y a rien à ouvrir.
+  #
+  # ✅ CE N'EST PAS LE CAS D'ÉPINGLE À CHEVEUX qui casse sur ce cluster : le trajet vise
+  # l'IP publique du cluster OVH, pas celle de store01. Le défaut connu — les pods de
+  # store01 ne joignent pas leur PROPRE IP publique — ne s'applique pas.
+  #
+  # ⚠️ CE QUE CELA CRÉE : une dépendance de l'entrée publique de CE cluster envers l'entrée
+  # publique de l'AUTRE. Cap injoignable, et tout captcha échoue ici. À peser le jour où on
+  # allume — une seconde instance de Cap sur store01 est la parade, au prix d'un second
+  # couple de clés.
+  #
+  # ⚠️ `<siteKey>` DANS LE CHEMIN : Cap accepte aussi `/siteverify` sans clé (il la relit
+  # alors dans le jeton), mais la nommer fait refuser un jeton émis pour un autre site.
+  # validateURL: 'https://{{ include "crowdsec-bouncer.captchaHost" . }}/<SITE_KEY>/siteverify'
+  validateURL: ""
+
+  # Le champ du formulaire qui porte le jeton. Imposé par le widget Cap.
+  responseField: cap-token
+
+  # Passé au gabarit comme `.FrontendKey`. Notre page ne s'en sert pas, le plugin l'exige.
+  frontendKey: cap-widget
+
+  # Durée pendant laquelle un captcha résolu vaut laissez-passer pour cette IP. Défaut du
+  # plugin. 30 min : assez pour une visite, assez court pour qu'une IP partagée ne reste
+  # pas ouverte longtemps après le départ de celui qui a résolu le contrôle.
+  gracePeriodSeconds: 1800
+
+secrets:
+  # Où le Secret est monté dans le pod Traefik. Doit rester d'accord avec le `volumes:` de
+  # charts/traefik-coraza/values.yaml.
+  mountPath: /secrets/crowdsec
+
+  # Les trois clés du Secret. Le nom du fichier EST le nom de la clé.
+  lapiKeyFile: lapi-key
+  captchaSiteKeyFile: captcha-site-key
+  captchaSecretKeyFile: captcha-secret-key
