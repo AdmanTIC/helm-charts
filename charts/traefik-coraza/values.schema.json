@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "Ne valide que le bloc `bouncer` : types, énumérations, et surtout les valeurs SANS DÉFAUT requises dès qu'un bouncer est activé (crowdsec.namespace, crowdsec.lapiHost). Les contrats que ce schéma ne sait pas exprimer — plugin déclaré côté subchart Traefik, volumes montés, URLs du captcha — sont vérifiés au rendu par templates/bouncer/guard.yaml, avec des messages détaillés.",
+  "type": "object",
+  "properties": {
+    "bouncer": {
+      "type": "object",
+      "properties": {
+        "crowdsec": {
+          "type": "object",
+          "properties": {
+            "namespace": { "type": "string" },
+            "lapiHost": { "type": "string" },
+            "lapiScheme": { "enum": ["http", "https"] },
+            "dbSecretName": { "type": "string", "minLength": 1 },
+            "dbHost": { "type": "string", "minLength": 1 },
+            "dbName": { "type": "string", "minLength": 1 }
+          }
+        },
+        "registerJob": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" }
+          }
+        },
+        "hashSuffix": { "type": "boolean" },
+        "crowdsecMode": { "enum": ["stream", "live", "alone", "appsec"] },
+        "updateMaxFailure": { "type": ["string", "integer"] },
+        "logLevel": { "enum": ["DEBUG", "INFO", "ERROR"] },
+        "ban": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "bouncerName": { "type": "string", "minLength": 1 },
+            "middlewareName": { "type": "string", "minLength": 1 },
+            "pluginAlias": { "type": "string", "minLength": 1 },
+            "statusCode": { "type": ["string", "integer"] }
+          }
+        },
+        "captcha": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "bouncerName": { "type": "string", "minLength": 1 },
+            "middlewareName": { "type": "string", "minLength": 1 },
+            "pluginAlias": { "type": "string", "minLength": 1 },
+            "provider": { "enum": ["custom", "hcaptcha", "recaptcha", "turnstile"] },
+            "gracePeriodSeconds": { "type": ["string", "integer"] }
+          }
+        },
+        "attach": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "middleware": { "enum": ["ban", "captcha"] },
+            "bypassHosts": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "Un bouncer activé exige l'adhérence CrowdSec EXPLICITE : pas de défaut plausible pour le namespace de la stack ni pour l'hôte de la LAPI.",
+          "if": {
+            "anyOf": [
+              { "properties": { "ban": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] } }, "required": ["ban"] },
+              { "properties": { "captcha": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] } }, "required": ["captcha"] }
+            ]
+          },
+          "then": {
+            "properties": {
+              "crowdsec": {
+                "properties": {
+                  "namespace": { "type": "string", "minLength": 1 },
+                  "lapiHost": { "type": "string", "minLength": 1 }
+                },
+                "required": ["namespace", "lapiHost"]
+              }
+            },
+            "required": ["crowdsec"]
+          }
+        }
+      ]
+    }
+  }
+}

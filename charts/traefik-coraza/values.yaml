@@ -352,6 +352,306 @@ catchAll:
   tls: {}
 
 # -----------------------------------------------------------------------------
+#  Bouncers CrowdSec — plugin Traefik (maxlerebourg/crowdsec-bouncer-traefik-plugin)
+# -----------------------------------------------------------------------------
+# OPTIONNELS, désactivés par défaut. Deux bouncers indépendants, activables
+# séparément, matérialisés chacun par un Middleware Traefik :
+#
+#   • ban      : REJET pur des décisions « ban » (statusCode + page ban.html).
+#   • captcha  : les décisions « captcha » suspendent la requête le temps d'un
+#                contrôle (page captcha.html + widget) ; les « ban » restent
+#                rejetés par la même instance.
+#
+# RIEN NE TOURNE ICI : le bouncer est du code exécuté DANS le processus
+# Traefik. Ce chart pose les objets que le plugin consomme (Middlewares,
+# ConfigMap de pages, Secret de clés), génère les clés d'API au rendu, et les
+# enregistre auprès de la LAPI par un job posé DANS LE NAMESPACE CROWDSEC
+# (c'est là que vivent les creds DB et l'accès à PgBouncer).
+#
+# 🛑 DEUX BLOCS À POSER SOI-MÊME dans la section `traefik:` — le subchart rend
+#    ces listes avec `toYaml` SANS `tpl`, rien ne peut les alimenter d'ici,
+#    et templates/bouncer/guard.yaml REFUSE DE RENDRE tant qu'ils manquent :
+#
+#      traefik:
+#        experimental:
+#          # 🛑 requis (garde) : un plugin qui échoue au démarrage ne doit pas
+#          # produire un pod Ready sans bouncer — avec le rollout en surge,
+#          # l'ancien pod continue de servir, l'échec est bruyant.
+#          abortOnPluginFailure: true
+#          plugins:
+#            bouncer:               # ← = pluginAlias ci-dessous
+#              moduleName: github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin
+#              version: vX.Y.Z      # épingler une version relevée
+#        deployment:
+#          additionalVolumes:
+#            - name: crowdsec-bouncer-pages
+#              configMap: { name: crowdsec-bouncer-pages }
+#            - name: crowdsec-bouncer-keys
+#              secret: { secretName: crowdsec-bouncer-keys }
+#        additionalVolumeMounts:
+#          - { name: crowdsec-bouncer-pages, mountPath: /crowdsec/pages, readOnly: true }
+#          - { name: crowdsec-bouncer-keys,  mountPath: /crowdsec/keys,  readOnly: true }
+#
+#    🛑 Un plugin Traefik est TÉLÉCHARGÉ ET COMPILÉ AU DÉMARRAGE de Traefik
+#       (plugins.traefik.io puis GitHub) : une dépendance de démarrage de
+#       l'entrée publique DE PLUS, qui s'ajoute à celles des initContainers
+#       Coraza. À assumer avant d'allumer.
+#
+# ⚠️ Côté stack CrowdSec (crowdsec-all-in-one) : la NetworkPolicy de son
+#    namespace doit laisser les pods Traefik joindre la LAPI (port 8080) —
+#    cf. networkPolicy.extraIngress là-bas. La remédiation « captcha » est
+#    décidée par SES profils (profiles.yaml) ; ce chart dit seulement comment
+#    l'appliquer.
+bouncer:
+  # ---------------------------------------------------------------------------
+  # crowdsec — l'adhérence à la stack CrowdSec, TOUTE ici
+  # ---------------------------------------------------------------------------
+  crowdsec:
+    # 🛑 SANS DÉFAUT, REQUIS dès qu'un bouncer est activé (garde + schéma) :
+    # le namespace où tourne crowdsec-all-in-one. Le chart y pose la copie du
+    # Secret de clés et le job d'enregistrement.
+    namespace: ""
+
+    # 🛑 SANS DÉFAUT, REQUIS : la LAPI vue depuis le pod Traefik, hôte ET port
+    # dans la même chaîne (le plugin n'a pas de champ port). Avec
+    # crowdsec-all-in-one : <release>-service.<namespace>.svc.cluster.local:8080
+    lapiHost: ""
+    lapiScheme: http
+
+    # Accès DB du job d'enregistrement — défauts alignés sur crowdsec-all-in-one
+    # (Secret `crowdsec-secrets`, clés crowdsecUsername/crowdsecPassword ;
+    # service `crowdsec-pgbouncer`). À surcharger si la stack dévie.
+    dbSecretName: crowdsec-secrets
+    dbHost: crowdsec-pgbouncer
+    dbName: crowdsec
+
+  # Hook PostSync (vague 3), posé dans crowdsec.namespace, qui INSERT les
+  # bouncers activés dans la table `bouncers` du LAPI (hash sha512 de la clé —
+  # équivalent cscli bouncers add). Idempotent (ON CONFLICT UPDATE).
+  # Désactiver pour enregistrer soi-même (cscli bouncers add + reporter les
+  # clés dans le Secret).
+  registerJob:
+    enabled: true
+    image:
+      repository: postgres
+      tag: "18-alpine"
+      pullPolicy: IfNotPresent
+
+  # Suffixer le nom des Middlewares de l'empreinte des pages (8 hex). Le plugin
+  # ne relit une page qu'à la CRÉATION de l'instance du middleware : avec ce
+  # suffixe, changer une page recrée l'objet et force la relecture (sans lui :
+  # redémarrer les pods Traefik). Contrepartie : le nom change — ne référencer
+  # alors le middleware que via attach ci-dessous, jamais en dur ailleurs.
+  hashSuffix: false
+
+  # `stream` : copie locale des décisions rafraîchie toutes les 60 s, au lieu
+  # d'interroger la LAPI à chaque requête. Recommandé dès qu'il y a du trafic.
+  crowdsecMode: stream
+
+  # Comportement quand la LAPI ne répond plus. Défaut plugin `0` : au premier
+  # rafraîchissement en échec, le flux est marqué malade et TOUT est refusé
+  # (403). `-1` = mode permissif : la dernière copie locale continue de
+  # s'appliquer, les IP inconnues passent — on perd les NOUVEAUX bans le temps
+  # de la panne, on ne coupe pas le public.
+  updateMaxFailure: "0"
+
+  # Verbosité du plugin dans les journaux Traefik. DEBUG dit pourquoi une IP
+  # est jugée comme elle l'est — utile les premiers jours, bavard ensuite.
+  logLevel: INFO
+
+  # ---------------------------------------------------------------------------
+  # branding — charte graphique des pages servies (ban + captcha)
+  # ---------------------------------------------------------------------------
+  # Les pages embarquées sont neutres ; ces quelques valeurs suffisent à les
+  # habiller — même esprit que coraza.errorPage.html pour la 403 du WAF. Pour
+  # un contrôle total : ban.overrideHtml / captcha.overrideHtml (HTML complet,
+  # avec les marqueurs %%...%% et les doubles accolades du plugin si besoin).
+  branding:
+    # Nom affiché (préfixe du <title>). Vide → titre générique.
+    siteName: ""
+    # Logo affiché en tête de page : URL publique ou data-URI (recommandé — la
+    # page reste alors sans aucune dépendance réseau). Vide → pas de logo.
+    logo: ""
+    # Couleur d'accent (séparateur, icône, bordures du widget).
+    primaryColor: "#003da5"
+    # Couleur de fond de la page.
+    backgroundColor: "#f0f4f8"
+    # À qui signaler un blocage jugé erroné (texte inséré dans la page).
+    supportContact: "l'administrateur du site"
+    # Langue des pages embarquées (attribut lang + locale de l'horodatage).
+    lang: fr
+
+  # ---------------------------------------------------------------------------
+  # pages — la ConfigMap ban.html / captcha.html
+  # ---------------------------------------------------------------------------
+  pages:
+    # ⚠️ Nom FIXE, non préfixé par le release : référencé *littéralement* dans
+    #    `traefik.deployment.additionalVolumes` (même contrainte que
+    #    coraza.configMapName). La garde vérifie la correspondance.
+    configMapName: crowdsec-bouncer-pages
+    # Où Traefik la monte. Doit correspondre au additionalVolumeMounts —
+    # vérifié par la garde.
+    mountPath: /crowdsec/pages
+    # Job ArgoCD (hook Sync, vague 1) qui dort entre la ConfigMap (vague 0) et
+    # les Middlewares (vague 2), le temps que le kubelet pousse la nouvelle
+    # page dans les pods Traefik (~60 s de période de sync). Utile uniquement
+    # avec ArgoCD ET hashSuffix: true. Coût : +propagationDelaySeconds à
+    # CHAQUE synchronisation.
+    waitJob:
+      enabled: false
+      propagationDelaySeconds: 90
+      image: busybox:1.37
+
+  # ---------------------------------------------------------------------------
+  # secrets — les clés lues par le plugin (fichiers montés, jamais en clair)
+  # ---------------------------------------------------------------------------
+  # Le chart génère une clé d'API LAPI PAR bouncer (à la 1ère install, puis
+  # préservées) dans ce Secret, et en pose une copie (clés d'API seulement)
+  # dans crowdsec.namespace pour le job d'enregistrement. Chaque paramètre
+  # sensible du plugin a une variante `…File` : les Middlewares ne contiennent
+  # que des CHEMINS, jamais les valeurs.
+  secrets:
+    # ⚠️ Nom FIXE, référencé *littéralement* dans
+    #    `traefik.deployment.additionalVolumes`. La garde vérifie.
+    name: crowdsec-bouncer-keys
+    # Où Traefik le monte. Doit correspondre au additionalVolumeMounts —
+    # vérifié par la garde.
+    mountPath: /crowdsec/keys
+
+  # ---------------------------------------------------------------------------
+  # forwardedHeaders — faire confiance à un en-tête d'IP cliente custom
+  # ---------------------------------------------------------------------------
+  # Permet à des sources listées (et elles seules) d'annoncer l'IP cliente dans
+  # un en-tête à vous — pas X-Forwarded-For, que Traefik purge à l'entrée pour
+  # les sources non déclarées dans SA config statique. Cas d'usage typique :
+  # une sonde interne qui pose un ban de test (IP 192.0.2.x, TEST-NET-1) et
+  # vérifie le 403 de bout en bout. ⚠️ Revers : un pod d'une IP listée peut
+  # usurper une IP cliente auprès du bouncer. Vide → désactivé.
+  forwardedHeaders:
+    trustedIPs: []
+    # ex: ["10.20.0.41/32"]
+    headerName: ""
+    # ex: X-Probe-Client-Ip
+
+  # ---------------------------------------------------------------------------
+  # ban — bouncer de REJET des décisions « ban »
+  # ---------------------------------------------------------------------------
+  ban:
+    # 🛑 L'INTERRUPTEUR. À false, aucun objet de ce bouncer n'est rendu.
+    enabled: false
+    # Nom enregistré côté LAPI (table `bouncers`). Unique par bouncer.
+    bouncerName: crowdsec-traefik-ban
+    # Nom du Middleware (suffixé de l'empreinte des pages si hashSuffix).
+    middlewareName: crowdsec-traefik-ban
+    # 🛑 DOIT ÊTRE L'ALIAS DU PLUGIN dans traefik.experimental.plugins.<alias>.
+    # La garde vérifie que la déclaration existe.
+    pluginAlias: bouncer
+    # Statut HTTP servi avec ban.html sur une décision « ban ».
+    statusCode: "403"
+    # HTML complet de la page de ban, en remplacement de la page embarquée.
+    overrideHtml: ""
+
+  # ---------------------------------------------------------------------------
+  # captcha — bouncer de VÉRIFICATION des décisions « captcha »
+  # ---------------------------------------------------------------------------
+  captcha:
+    # 🛑 L'INTERRUPTEUR. À false, aucun objet de ce bouncer n'est rendu.
+    enabled: false
+    bouncerName: crowdsec-traefik-captcha
+    middlewareName: crowdsec-traefik-captcha
+    pluginAlias: bouncer
+
+    # Fournisseur : hcaptcha | recaptcha | turnstile | custom.
+    # `custom` (défaut) est pensé pour Cap (https://capjs.js.org) auto-hébergé :
+    # preuve de travail, sans énigme visuelle, sans traceur, sans tiers.
+    # 🛑 Avec un fournisseur auto-hébergé, son hôte DOIT être routé HORS du
+    #    middleware captcha (sinon un visiteur en remédiation ne peut jamais
+    #    charger le widget) — cf. attach.bypassHosts.
+    provider: custom
+
+    # provider=custom : REQUIS (garde) — les deux URL du contrat.
+    # URL PUBLIQUE du script du widget (chargée par le NAVIGATEUR du visiteur).
+    # ex: https://captcha.example.com/assets/widget.js
+    jsURL: ""
+    # URL de validation du jeton, appelée par TRAEFIK (serveur à serveur —
+    # préférer une URL interne au cluster). Avec Cap : nommer la clé de site
+    # dans le chemin fait refuser un jeton émis pour un autre site.
+    # ex: http://cap.captcha.svc.cluster.local:3000/<siteKey>/siteverify
+    validateURL: ""
+    # Champ du formulaire qui porte le jeton (imposé par le widget Cap).
+    responseField: cap-token
+    # Passé au gabarit comme .FrontendKey — exigé par le plugin même si la
+    # page embarquée ne s'en sert pas.
+    frontendKey: cap-widget
+
+    # Durée pendant laquelle un captcha résolu vaut laissez-passer pour l'IP.
+    # Trop court : contrôle rejoué à chaque navigation ; trop long : une IP
+    # partagée reste ouverte après le départ de l'humain qui l'a résolu.
+    gracePeriodSeconds: 1800
+
+    # Paramètres de la page captcha embarquée (provider=custom / Cap).
+    widget:
+      # REQUIS avec la page embarquée (garde) : base du point d'API du widget
+      # (le navigateur y joint /<siteKey>/). ex: https://captcha.example.com
+      apiBaseURL: ""
+      # URL du WebAssembly du widget (window.CAP_CUSTOM_WASM_URL).
+      # ex: https://captcha.example.com/assets/cap_wasm_bg.wasm
+      wasmURL: ""
+
+    # Clés publique et secrète du site captcha — REQUIS (garde), au choix :
+    #   1) inline (siteKey/secretKey) → fusionnées dans le Secret
+    #      secrets.name, monté une seule fois. ⚠️ secret en clair dans les
+    #      values — à réserver aux values chiffrées (SOPS…).
+    #   2) existingSecret → Secret pré-existant DANS LE NAMESPACE DU RELEASE,
+    #      à monter soi-même (mountPath ci-dessous, vide → secrets.mountPath).
+    keys:
+      siteKey: ""
+      secretKey: ""
+      existingSecret: ""
+      mountPath: ""
+      siteKeyFile: captcha-site-key
+      secretKeyFile: captcha-secret-key
+
+    # HTML complet de la page captcha, en remplacement de la page embarquée.
+    overrideHtml: ""
+
+  # ---------------------------------------------------------------------------
+  # attach — accrochage au-dessus du catch-all du WAF
+  # ---------------------------------------------------------------------------
+  # Pose un routeur `catchAll.match` à catchAll.priority+1 vers le service
+  # Coraza, portant le middleware choisi — le sandwich WAF est conservé — et,
+  # si bypassHosts est renseigné, un routeur SANS bouncer à +2 (🛑 toujours y
+  # lister un serveur de captcha auto-hébergé). Entrypoints, service, priorité
+  # et TLS sont repris de catchAll/coraza : rien à recopier. Si le middleware
+  # ne se résout pas, seul ce routeur tombe : le waf-catchall reprend le
+  # trafic, sans bouncer.
+  # Alternative : laisser enabled: false et référencer le middleware depuis
+  # vos Ingress/IngressRoute applicatifs.
+  attach:
+    enabled: false
+    name: crowdsec-bouncer
+    # Middleware accroché au catch-all : `captcha` (qui traite AUSSI les bans)
+    # ou `ban`.
+    middleware: captcha
+    # Hôtes routés SANS bouncer (serveur de captcha, et rien d'autre : un hôte
+    # listé ici n'est plus protégé par CrowdSec — Coraza, lui, l'inspecte
+    # toujours).
+    bypassHosts: []
+
+# -----------------------------------------------------------------------------
+#  rollout — garde-fous des mises à jour (templates/rollout-guard.yaml)
+# -----------------------------------------------------------------------------
+# Le rendu REFUSE toute combinaison qui rendrait une mise à jour de
+# configuration non transparente (nœud sans ingress pendant l'init/compilation) :
+# stratégie sans surge, maxUnavailable > 0, hostPort sur un entrypoint.
+# Cf. le bloc `traefik.updateStrategy` plus haut pour le raisonnement.
+rollout:
+  # Passer à true pour ASSUMER une stratégie disruptive (par ex. déploiement
+  # en hostPort, où le surge est impossible : le rollout coupera alors chaque
+  # nœud le temps de l'init). Les gardes correspondantes sont désactivées.
+  allowDisruptiveUpdates: false
+
+# -----------------------------------------------------------------------------
 #  Compatibilité de nommage avec un install standalone du chart Traefik
 #
 #  Permet de déployer ce chart À LA PLACE d'un release Traefik existant : les
@@ -407,6 +707,14 @@ traefik:
   deployment:
     # Contrainte dure.
     kind: DaemonSet
+
+    # Un pod remplaçant qui devient Ready puis meurt (plugin qui se charge mal,
+    # OOM au chargement du CRS…) ne doit pas avoir déjà fait tuer l'ancien :
+    # le contrôleur ne compte le pod « available » qu'après ce délai de bonne
+    # santé, et le rollout — donc la suppression de l'ancien pod — attend.
+    # 30 s couvrent le provisioning complet (CRS chargé, plugin compilé par
+    # Yaegi, premières sondes passées).
+    minReadySeconds: 30
 
     additionalVolumes:
       # Template Caddyfile patché, produit par l'initContainer.
@@ -873,6 +1181,32 @@ traefik:
             # l'execve d'un binaire « capability-dumb » → Operation not permitted.
             # Vrai même si Caddy écoute sur 8090.
             add: ["NET_BIND_SERVICE"]
+
+  # --- Rollout : le nœud ne doit JAMAIS perdre son entrée publique ------------
+  # Le démarrage d'un pod Traefik de ce chart est LONG et dépendant du réseau :
+  # patch du Caddyfile, ~2 min de compilation Caddy (caches vides), chargement
+  # du CRS, et — bouncer activé — téléchargement + compilation Yaegi du plugin.
+  # Avec la stratégie par défaut d'un DaemonSet (maxUnavailable: 1, pas de
+  # surge), CHAQUE mise à jour de configuration laisserait chaque nœud sans
+  # ingress pendant toute cette phase d'init.
+  #
+  # D'où ce réglage, ÉPINGLÉ ici (c'est le défaut du chart 41.0.2, mais un bump
+  # amont ne doit pas pouvoir le changer en silence) : le pod remplaçant est
+  # créé À CÔTÉ de l'ancien (surge), qui continue de servir jusqu'à ce que le
+  # nouveau soit Ready + minReadySeconds. Coupure : zéro.
+  #
+  # Ce que ça suppose — vérifié au rendu par templates/rollout-guard.yaml :
+  #   • kubeVersion >= 1.25 (maxSurge sur DaemonSet GA) — le chart exige 1.27 ;
+  #   • PAS de hostPort sur les entrypoints (deux pods coexistent sur le nœud
+  #     pendant le surge : un hostPort entrerait en conflit). L'exposition
+  #     passe par le Service NodePort externalTrafficPolicy: Local, qui ne
+  #     route que vers les pods Ready du nœud : la bascule est atomique ;
+  #   • PAS de hostNetwork (même conflit, le subchart le refuse déjà).
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
 
   # --- Service ---------------------------------------------------------------
   service:

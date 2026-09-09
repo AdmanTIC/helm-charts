@@ -1,0 +1,100 @@
+{{- /*
+=============================================================================
+ Garde de rendu des bouncers CrowdSec — ne produit AUCUN objet.
+
+ Même philosophie que naming-guard.yaml et que values.schema.json (qui
+ vérifie types et champs requis) : tout ce qu'un déploiement raté
+ n'expliquerait qu'à moitié est vérifié ICI, au rendu, avec le geste exact à
+ faire. En particulier les contrats que le schéma JSON ne sait pas exprimer :
+ la cohérence entre `bouncer.*` et les values du SUBCHART Traefik (plugin
+ déclaré, volumes montés), que le chart ne peut pas poser lui-même —
+ `experimental.plugins`, `deployment.additionalVolumes` et
+ `additionalVolumeMounts` sont rendus par le subchart avec `toYaml` SANS
+ `tpl`, aucune value du parent ne peut les alimenter.
+=============================================================================
+*/ -}}
+{{- $bn := .Values.bouncer }}
+{{- if eq (include "bouncer.anyEnabled" .) "true" }}
+
+{{- /* --- Adhérence CrowdSec : pas de défaut plausible, donc pas de défaut --- */}}
+{{- if not $bn.crowdsec.namespace }}
+{{- fail "\n\nbouncer.crowdsec.namespace est VIDE.\n\nLe chart doit poser la copie du Secret de clés et le job d'enregistrement\ndans le namespace où tourne la stack CrowdSec (crowdsec-all-in-one), et il\nn'existe aucun défaut sûr : le renseigner explicitement.\n\n  bouncer:\n    crowdsec:\n      namespace: crowdsec\n" }}
+{{- end }}
+{{- if not $bn.crowdsec.lapiHost }}
+{{- fail "\n\nbouncer.crowdsec.lapiHost est VIDE.\n\nC'est l'hôte de la LAPI vu depuis le pod Traefik, PORT COMPRIS dans la même\nchaîne (le plugin n'a pas de champ port). Avec crowdsec-all-in-one, le\nService LAPI s'appelle <release>-service :\n\n  bouncer:\n    crowdsec:\n      lapiHost: crowdsec-service.crowdsec.svc.cluster.local:8080\n" }}
+{{- end }}
+
+{{- /* --- Plugin déclaré dans la config statique du subchart Traefik --------- */}}
+{{- $plugins := dig "experimental" "plugins" dict .Values.traefik }}
+{{- range $alias := list $bn.ban.pluginAlias $bn.captcha.pluginAlias | uniq }}
+{{- $needed := or (and $bn.ban.enabled (eq $alias $bn.ban.pluginAlias)) (and $bn.captcha.enabled (eq $alias $bn.captcha.pluginAlias)) }}
+{{- if and $needed (not (hasKey $plugins $alias)) }}
+{{- fail (printf "\n\nLe plugin bouncer n'est PAS déclaré dans la configuration statique de\nTraefik : un Middleware qui nomme un plugin non chargé met son routeur en\nERREUR. Ajouter dans les values :\n\n  traefik:\n    experimental:\n      plugins:\n        %s:\n          moduleName: github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin\n          version: vX.Y.Z   # épingler une version relevée\n\n🛑 Un plugin Traefik est TÉLÉCHARGÉ ET COMPILÉ AU DÉMARRAGE de Traefik\n(plugins.traefik.io puis GitHub) : c'est une dépendance de démarrage de\nl'entrée publique, à assumer avant d'allumer.\n" $alias) }}
+{{- end }}
+{{- end }}
+
+{{- /* Un plugin qui échoue au démarrage (plugins.traefik.io injoignable,
+       version disparue, échec Yaegi) ne doit JAMAIS produire un pod Ready
+       sans bouncer : pendant un rollout, il remplacerait l'ancien pod et la
+       protection tomberait en silence. Avec abortOnPluginFailure le pod
+       remplaçant ne démarre pas ; le rollout en surge (rollout-guard.yaml)
+       garantit alors que l'ANCIEN pod continue de servir — échec bruyant,
+       trafic intact. */}}
+{{- if not (dig "experimental" "abortOnPluginFailure" false .Values.traefik) }}
+{{- fail "\n\ntraefik.experimental.abortOnPluginFailure doit être true quand un bouncer\nest activé : sans lui, un plugin qui échoue au démarrage (dépôt injoignable,\nversion disparue, échec de compilation Yaegi) laisse Traefik démarrer SANS\nbouncer — et pendant un rollout, ce pod Ready remplacerait l'ancien : la\nprotection tomberait en silence. Avec :\n\n  traefik:\n    experimental:\n      abortOnPluginFailure: true\n\nle pod remplaçant ne démarre pas, et le rollout en surge (maxUnavailable: 0,\ncf. rollout-guard.yaml) laisse l'ancien pod servir : échec bruyant, trafic\nintact.\n" }}
+{{- end }}
+
+{{- /* --- Volumes et montages dans le pod Traefik --------------------------- */}}
+{{- $volumes := dig "deployment" "additionalVolumes" list .Values.traefik }}
+{{- $mounts := .Values.traefik.additionalVolumeMounts | default list }}
+{{- $hasPagesVol := false }}{{- $hasKeysVol := false }}
+{{- range $volumes }}
+{{- if eq (dig "configMap" "name" "" .) $bn.pages.configMapName }}{{ $hasPagesVol = true }}{{ end }}
+{{- if eq (dig "secret" "secretName" "" .) $bn.secrets.name }}{{ $hasKeysVol = true }}{{ end }}
+{{- end }}
+{{- $hasPagesMount := false }}{{- $hasKeysMount := false }}
+{{- range $mounts }}
+{{- if eq (.mountPath | default "") $bn.pages.mountPath }}{{ $hasPagesMount = true }}{{ end }}
+{{- if eq (.mountPath | default "") $bn.secrets.mountPath }}{{ $hasKeysMount = true }}{{ end }}
+{{- end }}
+{{- if not (and $hasPagesVol $hasKeysVol $hasPagesMount $hasKeysMount) }}
+{{- fail (printf "\n\nLe plugin bouncer lit des FICHIERS du pod Traefik ; la ConfigMap des pages\net le Secret des clés doivent y être montés, et le subchart rend ces listes\nsans tpl (rien ne peut les poser depuis ce chart). Manque :%s%s%s%s\n\nAjouter dans les values :\n\n  traefik:\n    deployment:\n      additionalVolumes:\n        - name: crowdsec-bouncer-pages\n          configMap:\n            name: %s\n        - name: crowdsec-bouncer-keys\n          secret:\n            secretName: %s\n    additionalVolumeMounts:\n      - name: crowdsec-bouncer-pages\n        mountPath: %s\n        readOnly: true\n      - name: crowdsec-bouncer-keys\n        mountPath: %s\n        readOnly: true\n\nPoser les volumes ET activer le bouncer dans la MÊME synchronisation est sûr :\nla ConfigMap et le Secret sont rendus par ce chart, donc appliqués avec le\nrollout Traefik qui les monte.\n"
+    (ternary "" (printf "\n  - volume configMap %q" $bn.pages.configMapName) $hasPagesVol)
+    (ternary "" (printf "\n  - volume secret %q" $bn.secrets.name) $hasKeysVol)
+    (ternary "" (printf "\n  - volumeMount %q" $bn.pages.mountPath) $hasPagesMount)
+    (ternary "" (printf "\n  - volumeMount %q" $bn.secrets.mountPath) $hasKeysMount)
+    $bn.pages.configMapName $bn.secrets.name $bn.pages.mountPath $bn.secrets.mountPath) }}
+{{- end }}
+
+{{- /* --- Captcha : le contrat du fournisseur -------------------------------- */}}
+{{- if $bn.captcha.enabled }}
+{{- if eq $bn.captcha.provider "custom" }}
+{{- if not $bn.captcha.jsURL }}
+{{- fail "\n\nbouncer.captcha.jsURL est VIDE (requis avec provider: custom).\nC'est l'URL PUBLIQUE du script du widget, chargée par le navigateur du\nvisiteur — ex : https://captcha.example.com/assets/widget.js\n" }}
+{{- end }}
+{{- if not $bn.captcha.validateURL }}
+{{- fail "\n\nbouncer.captcha.validateURL est VIDE (requis avec provider: custom).\nC'est l'URL de validation du jeton, appelée par TRAEFIK (serveur à serveur,\npréférer une URL interne au cluster) —\nex : http://cap.captcha.svc.cluster.local:3000/<siteKey>/siteverify\n" }}
+{{- end }}
+{{- if and (not $bn.captcha.overrideHtml) (not $bn.captcha.widget.apiBaseURL) }}
+{{- fail "\n\nbouncer.captcha.widget.apiBaseURL est VIDE.\nLa page captcha embarquée en a besoin pour le point d'API du widget Cap\n(data-cap-api-endpoint) — ex : https://captcha.example.com\n(Inutile seulement si vous fournissez bouncer.captcha.overrideHtml.)\n" }}
+{{- end }}
+{{- end }}
+{{- if and (not $bn.captcha.keys.existingSecret) (not (and $bn.captcha.keys.siteKey $bn.captcha.keys.secretKey)) }}
+{{- fail "\n\nAucune clé de site captcha fournie : renseigner bouncer.captcha.keys —\nsoit existingSecret (Secret pré-existant dans le namespace du release, monté\npar vos soins), soit siteKey + secretKey inline (fusionnées dans le Secret\ndes clés du chart).\n" }}
+{{- end }}
+{{- end }}
+
+{{- /* --- Accrochage --------------------------------------------------------- */}}
+{{- if $bn.attach.enabled }}
+{{- if not .Values.catchAll.enabled }}
+{{- fail "\n\nbouncer.attach.enabled requiert catchAll.enabled : les routeurs du bouncer\nse posent au-dessus du catch-all du WAF (mêmes entrypoints, même service,\npriorités catchAll.priority+1 et +2).\n" }}
+{{- end }}
+{{- if and (eq $bn.attach.middleware "captcha") (not $bn.captcha.enabled) }}
+{{- fail "\n\nbouncer.attach.middleware vaut \"captcha\" mais bouncer.captcha.enabled est\nfalse. Activer le bouncer captcha, ou accrocher \"ban\".\n" }}
+{{- end }}
+{{- if and (eq $bn.attach.middleware "ban") (not $bn.ban.enabled) }}
+{{- fail "\n\nbouncer.attach.middleware vaut \"ban\" mais bouncer.ban.enabled est false.\nActiver le bouncer ban, ou accrocher \"captcha\".\n" }}
+{{- end }}
+{{- end }}
+
+{{- end }}

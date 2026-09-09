@@ -1,0 +1,57 @@
+{{- $bn := .Values.bouncer }}
+{{- if and (eq (include "bouncer.anyEnabled" .) "true") $bn.pages.waitJob.enabled }}
+# ---------------------------------------------------------------------------
+#  Le DÉLAI entre la ConfigMap des pages et les Middlewares qui la lisent
+#  (utile uniquement avec ArgoCD ET bouncer.hashSuffix activé).
+#
+#  🛑 POURQUOI UN JOB QUI DORT. Le plugin lit les pages UNE FOIS, à la création
+#     de l'instance du middleware. ArgoCD applique ConfigMap et Middleware dans
+#     la même seconde ; Traefik crée l'instance en ~2 s ; mais le kubelet met
+#     jusqu'à 60 s (sa période de synchronisation) à pousser la nouvelle
+#     ConfigMap dans le pod. Résultat : un middleware tout neuf qui sert
+#     l'ANCIENNE page. ArgoCD n'entame une vague qu'une fois la précédente
+#     saine : ce Job, en vague 1, dort donc le temps de la propagation, entre la
+#     ConfigMap (vague 0) et les Middlewares (vague 2).
+#
+#  ⚠️ COÛT : +propagationDelaySeconds à CHAQUE synchronisation de l'Application,
+#     page changée ou non. Désactivable via pages.waitJob.enabled.
+# ---------------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "bouncer.name" . }}-wait-page
+  labels:
+    {{- include "bouncer.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "bouncer.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: wait
+          image: {{ $bn.pages.waitJob.image }}
+          command: ["sleep", {{ $bn.pages.waitJob.propagationDelaySeconds | quote }}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { memory: 32Mi }
+{{- end }}

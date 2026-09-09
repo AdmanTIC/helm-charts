@@ -1,0 +1,47 @@
+{{- /*
+=============================================================================
+ Garde de rendu du ROLLOUT — ne produit aucun objet.
+
+ Le démarrage d'un pod Traefik de ce chart est long et dépendant du réseau
+ (patch du Caddyfile, ~2 min de compilation Caddy, chargement du CRS, et —
+ bouncer activé — téléchargement + compilation Yaegi du plugin). Une mise à
+ jour de configuration ne doit JAMAIS coûter cette phase d'init au trafic du
+ nœud : le pod remplaçant doit être créé À CÔTÉ de l'ancien (surge,
+ maxUnavailable: 0), l'ancien servant jusqu'à Ready + minReadySeconds.
+
+ Ces vérifications refusent au rendu toute combinaison qui casserait cette
+ transparence — plutôt que de la laisser se découvrir au premier upgrade,
+ nœud par nœud. Débrayable en connaissance de cause :
+ rollout.allowDisruptiveUpdates: true.
+=============================================================================
+*/ -}}
+{{- if not .Values.rollout.allowDisruptiveUpdates }}
+{{- if eq (dig "deployment" "kind" "" .Values.traefik) "DaemonSet" }}
+
+{{- $us := .Values.traefik.updateStrategy }}
+{{- if not $us }}
+{{- fail "\n\ntraefik.updateStrategy est vide : le subchart omettrait le champ et le\nDaemonSet retomberait sur le défaut Kubernetes (RollingUpdate,\nmaxUnavailable: 1, pas de surge) — chaque mise à jour couperait l'ingress du\nnœud pendant toute la phase d'init/compilation. Restaurer :\n\n  traefik:\n    updateStrategy:\n      type: RollingUpdate\n      rollingUpdate:\n        maxUnavailable: 0\n        maxSurge: 1\n\n(ou assumer la coupure : rollout.allowDisruptiveUpdates: true)\n" }}
+{{- end }}
+{{- if eq ($us.type | default "RollingUpdate") "RollingUpdate" }}
+{{- $mu := toString (dig "rollingUpdate" "maxUnavailable" "1" $us) }}
+{{- $ms := toString (dig "rollingUpdate" "maxSurge" "0" $us) }}
+{{- if not (or (eq $mu "0") (eq $mu "0%")) }}
+{{- fail (printf "\n\ntraefik.updateStrategy.rollingUpdate.maxUnavailable vaut %q : l'ancien pod\nserait tué AVANT que le remplaçant ait fini son init (patch Caddyfile,\n~2 min de compilation, plugin bouncer) — le nœud resterait sans ingress\npendant toute cette phase, à chaque mise à jour de configuration.\nAttendu : 0 (le remplaçant est créé en surge à côté de l'ancien).\n\n(ou assumer la coupure : rollout.allowDisruptiveUpdates: true)\n" $mu) }}
+{{- end }}
+{{- if or (eq $ms "0") (eq $ms "0%") }}
+{{- fail "\n\ntraefik.updateStrategy.rollingUpdate.maxSurge vaut 0 : avec maxUnavailable: 0\nle rollout serait tout bonnement BLOQUÉ (aucun pod ne peut être ni ajouté ni\nretiré). Attendu : maxSurge >= 1.\n\n(ou assumer une stratégie disruptive : rollout.allowDisruptiveUpdates: true)\n" }}
+{{- end }}
+{{- end }}
+
+{{- /* Le surge fait coexister DEUX pods sur le nœud : un hostPort entrerait
+       en conflit et le pod remplaçant ne se schedulerait jamais (rollout
+       bloqué, silencieusement). L'exposition de ce chart passe par le Service
+       NodePort externalTrafficPolicy: Local, qui n'a pas ce problème. */}}
+{{- range $name, $port := .Values.traefik.ports }}
+{{- if and (kindIs "map" $port) $port.hostPort }}
+{{- fail (printf "\n\ntraefik.ports.%s.hostPort est défini : incompatible avec le rollout en\nsurge (deux pods coexistent sur le nœud pendant la mise à jour, le second ne\npourrait pas binder le port et le rollout resterait bloqué). Exposer via le\nService NodePort (défaut de ce chart), ou assumer une stratégie disruptive :\nrollout.allowDisruptiveUpdates: true + maxUnavailable >= 1.\n" $name) }}
+{{- end }}
+{{- end }}
+
+{{- end }}
+{{- end }}

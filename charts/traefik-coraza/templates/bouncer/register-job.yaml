@@ -1,0 +1,130 @@
+{{- $bn := .Values.bouncer }}
+{{- if and (eq (include "bouncer.anyEnabled" .) "true") $bn.registerJob.enabled }}
+# ---------------------------------------------------------------------------
+#  Enregistrement des bouncers auprès de la LAPI — posé dans le NAMESPACE
+#  CROWDSEC (bouncer.crowdsec.namespace), pas dans celui du release : c'est
+#  là que vivent les creds DB (`crowdsec-secrets`, generés par
+#  crowdsec-all-in-one) et l'accès réseau intra-namespace vers PgBouncer
+#  (la NetworkPolicy du namespace autorise l'intra-namespace).
+#
+#  Même mécanique que les register-jobs de crowdsec-all-in-one : INSERT dans
+#  la table `bouncers` avec le hash sha512(clé) — équivalent à
+#  `cscli bouncers add` — idempotent via ON CONFLICT (re-tournable après
+#  rotation des clés).
+#
+#  ⚠️ Adhérence au SCHÉMA interne de CrowdSec (colonnes de `bouncers`),
+#     validée contre la version épinglée par crowdsec-all-in-one (v1.7.x).
+#     À revérifier si la stack CrowdSec est bumpée majeure.
+# ---------------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-register-traefik-bouncer
+  namespace: {{ $bn.crowdsec.namespace }}
+  labels:
+    {{- include "bouncer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: register-traefik-bouncer
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "3"
+    "helm.sh/hook-delete-policy": before-hook-creation
+    "argocd.argoproj.io/hook": PostSync
+    "argocd.argoproj.io/sync-wave": "3"
+    "argocd.argoproj.io/hook-delete-policy": BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 5
+  template:
+    metadata:
+      labels:
+        {{- include "bouncer.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: register-traefik-bouncer
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsUser: 0
+      containers:
+        - name: register
+          image: "{{ $bn.registerJob.image.repository }}:{{ $bn.registerJob.image.tag }}"
+          imagePullPolicy: {{ $bn.registerJob.image.pullPolicy }}
+          env:
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $bn.crowdsec.dbSecretName }}
+                  key: crowdsecUsername
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $bn.crowdsec.dbSecretName }}
+                  key: crowdsecPassword
+            - name: DB_NAME
+              value: {{ $bn.crowdsec.dbName | quote }}
+            - name: DB_HOST
+              value: {{ $bn.crowdsec.dbHost | quote }}
+            {{- if $bn.ban.enabled }}
+            - name: BAN_BOUNCER_NAME
+              value: {{ $bn.ban.bouncerName | quote }}
+            - name: BAN_BOUNCER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $bn.secrets.name }}
+                  key: ban-api-key
+            {{- end }}
+            {{- if $bn.captcha.enabled }}
+            - name: CAPTCHA_BOUNCER_NAME
+              value: {{ $bn.captcha.bouncerName | quote }}
+            - name: CAPTCHA_BOUNCER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $bn.secrets.name }}
+                  key: captcha-api-key
+            {{- end }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+
+              echo "[register-traefik-bouncer] Waiting for PostgreSQL..."
+              until timeout 5 psql -h "$DB_HOST" -p 5432 -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1" > /dev/null 2>&1; do
+                echo "[register-traefik-bouncer] PostgreSQL not ready, retrying in 3s..."
+                sleep 3
+              done
+
+              echo "[register-traefik-bouncer] Waiting for CrowdSec schema (bouncers table)..."
+              until psql -h "$DB_HOST" -p 5432 -U "$DB_USER" -d "$DB_NAME" \
+                -c "SELECT 1 FROM bouncers LIMIT 1" > /dev/null 2>&1; do
+                echo "[register-traefik-bouncer] schema not ready, retrying in 3s..."
+                sleep 3
+              done
+
+              # pgcrypto (digest()) — idempotent, needed on pre-existing DBs
+              # where initdb.scripts never ran. Trusted extension since PG13,
+              # so the DB owner can CREATE it.
+              echo "[register-traefik-bouncer] Ensuring pgcrypto extension..."
+              psql -h "$DB_HOST" -p 5432 -U "$DB_USER" -d "$DB_NAME" \
+                -v ON_ERROR_STOP=1 \
+                -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+
+              register() {
+                NAME="$1"; KEY="$2"
+                # SQL escape (PostgreSQL: '' is the escaped single quote).
+                SAFE_NAME=$(printf '%s' "$NAME" | sed "s/'/''/g")
+                SAFE_KEY=$(printf  '%s' "$KEY"  | sed "s/'/''/g")
+                echo "[register-traefik-bouncer] Registering bouncer '${NAME}'..."
+                # api_key stored as hex(sha512(plaintext)) — matches cscli bouncers add.
+                printf "INSERT INTO bouncers (created_at, updated_at, name, api_key, revoked, ip_address, type, version, auth_type) VALUES (NOW(), NOW(), '%s', encode(digest('%s', 'sha512'), 'hex'), false, '', 'traefik', '', 'api-key') ON CONFLICT (name) DO UPDATE SET api_key = encode(digest('%s', 'sha512'), 'hex'), revoked = false, updated_at = NOW();" \
+                  "$SAFE_NAME" "$SAFE_KEY" "$SAFE_KEY" \
+                  | psql -h "$DB_HOST" -p 5432 -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1
+              }
+
+              {{- if $bn.ban.enabled }}
+              register "$BAN_BOUNCER_NAME" "$BAN_BOUNCER_API_KEY"
+              {{- end }}
+              {{- if $bn.captcha.enabled }}
+              register "$CAPTCHA_BOUNCER_NAME" "$CAPTCHA_BOUNCER_API_KEY"
+              {{- end }}
+
+              echo "[register-traefik-bouncer] Done."
+{{- end }}

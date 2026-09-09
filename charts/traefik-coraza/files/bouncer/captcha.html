@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="%%LANG%%">
+<!-- Page de vérification servie sur une décision « captcha » de CrowdSec, pensée pour un
+     fournisseur `custom` de type Cap (https://capjs.js.org) auto-hébergé.
+     Fichier rendu par le PLUGIN Traefik, pas par Helm : les doubles accolades
+     ({{ .SiteKey }}, {{ .FrontendJS }}) sont interprétées par le plugin. Les marqueurs
+     %%...%% sont remplacés par Helm (cf. helper traefikBouncer.renderPage). -->
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex">
+    <title>%%TITLE_PREFIX%%Vérification de sécurité</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: %%BACKGROUND_COLOR%%;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            text-align: center;
+            max-width: 600px;
+            background: #ffffff;
+            border-radius: 16px;
+            padding: 50px 40px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+        }
+
+        .logo {
+            margin-bottom: 30px;
+        }
+
+        .logo img {
+            max-width: 250px;
+            max-height: 120px;
+            height: auto;
+        }
+
+        .icon {
+            margin-bottom: 24px;
+        }
+
+        h1 {
+            font-size: 24px;
+            color: #1a1a2e;
+            margin-bottom: 16px;
+            font-weight: 700;
+        }
+
+        p {
+            font-size: 17px;
+            color: #555;
+            line-height: 1.7;
+            margin-bottom: 12px;
+        }
+
+        .separator {
+            width: 60px;
+            height: 4px;
+            background: %%PRIMARY_COLOR%%;
+            border-radius: 2px;
+            margin: 24px auto;
+        }
+
+        .info {
+            font-size: 15px;
+            color: #888;
+            margin-top: 20px;
+        }
+
+        .widget {
+            margin-top: 28px;
+            display: flex;
+            justify-content: center;
+            min-height: 96px;
+        }
+
+        cap-widget {
+            --cap-background: #ffffff;
+            --cap-color: #1a1a2e;
+            --cap-checkbox-size: 30px;
+            --cap-checkbox-border: 2px solid %%PRIMARY_COLOR%%;
+            --cap-checkbox-border-radius: 7px;
+            --cap-checkbox-background: #f7f9fc;
+            --cap-spinner-color: %%PRIMARY_COLOR%%;
+            --cap-spinner-thickness: 4;
+            --cap-focus-ring: %%PRIMARY_COLOR%%;
+            --cap-troubleshoot-color: %%PRIMARY_COLOR%%;
+            --cap-gap: 16px;
+            --cap-widget-width: 340px;
+            --cap-widget-height: 72px;
+            --cap-widget-padding: 18px;
+            zoom: 1.15;
+            --cap-border-color: transparent;
+            --cap-border-radius: 20px;
+            border-radius: 20px; /* aligner sur --cap-border-radius */
+            border: 2px solid %%PRIMARY_COLOR%%;
+            display: inline-block;
+        }
+
+        .fallback {
+            display: none;
+            font-size: 15px;
+            color: #b3261e;
+            margin-top: 18px;
+        }
+
+        .contact {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f7f9fc;
+            border-radius: 10px;
+            font-size: 15px;
+            color: #555;
+            line-height: 1.7;
+        }
+
+        .contact strong {
+            color: %%PRIMARY_COLOR%%;
+        }
+
+        .details {
+            margin-top: 18px;
+            padding-top: 16px;
+            border-top: 1px solid #e3e9f2;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 13px;
+            color: #7a869a;
+            word-break: break-all;
+            text-align: left;
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 36px 24px;
+            }
+
+            .logo img {
+                max-width: 180px;
+            }
+
+            cap-widget {
+                --cap-widget-width: 100%;
+                zoom: 1.05;
+            }
+
+            h1 {
+                font-size: 22px;
+            }
+
+            p {
+                font-size: 15px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        %%LOGO_BLOCK%%
+
+        <svg class="icon" width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="%%PRIMARY_COLOR%%" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3l7.5 3v5.2c0 4.4-3 8.2-7.5 9.6-4.5-1.4-7.5-5.2-7.5-9.6V6z"></path>
+            <polyline points="9 12 11.2 14.2 15.4 10"></polyline>
+        </svg>
+
+        <h1>Une vérification, et vous repartez</h1>
+
+        <div class="separator"></div>
+
+        <form method="POST" action="" id="captcha-form">
+            <div class="widget">
+                <cap-widget id="captcha"
+                    data-cap-api-endpoint="%%CAP_API_BASE%%/{{ .SiteKey }}/"
+                    data-cap-i18n-initial-state="Je ne suis pas un robot"
+                    data-cap-i18n-verifying-label="Vérification en cours…"
+                    data-cap-i18n-solved-label="Vérification réussie"
+                    data-cap-i18n-error-label="Échec, réessayez."
+                    data-cap-i18n-troubleshooting-label="Un problème ?"></cap-widget>
+            </div>
+        </form>
+
+        <p class="info">Laissez la case travailler quelques secondes, la page reprend ensuite son cours.</p>
+
+        <p class="fallback" id="fallback">La vérification n'a pas pu se charger. Rechargez la page ; si cela se répète, signalez-le avec les deux lignes ci-dessous.</p>
+
+        <div class="contact">
+            Ce contrôle tourne sur nos serveurs : aucun tiers n'est appelé, aucun cookie publicitaire n'est posé, rien n'est envoyé ailleurs.<br>
+            S'il se répète ou ne se termine jamais, signalez-le à <strong>%%SUPPORT_TEXT%%</strong> en lui copiant les deux lignes ci-dessous.
+            <div class="details">
+                <div id="d-url">Page&nbsp;: -</div>
+                <div id="d-time">Heure&nbsp;: -</div>
+            </div>
+        </div>
+    </div>
+
+    <script>window.CAP_CUSTOM_WASM_URL = "%%CAP_WASM_URL%%";</script>
+    <script type="module" src="{{ .FrontendJS }}"></script>
+
+    <script>
+        (function () {
+            try {
+                document.getElementById('d-url').textContent = 'Page : ' + window.location.href;
+                document.getElementById('d-time').textContent = 'Heure : ' + new Date().toLocaleString('%%LANG%%');
+            } catch (e) {}
+
+            var widget = document.getElementById('captcha');
+            var form = document.getElementById('captcha-form');
+
+            widget.addEventListener('solve', function () {
+                setTimeout(function () { form.submit(); }, 300);
+            });
+
+            widget.addEventListener('error', function () {
+                document.getElementById('fallback').style.display = 'block';
+            });
+
+            setTimeout(function () {
+                if (!window.customElements || !window.customElements.get('cap-widget')) {
+                    document.getElementById('fallback').style.display = 'block';
+                }
+            }, 8000);
+        })();
+    </script>
+</body>
+</html>

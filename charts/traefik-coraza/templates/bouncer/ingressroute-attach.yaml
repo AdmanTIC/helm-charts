@@ -1,0 +1,86 @@
+{{- $bn := .Values.bouncer }}
+{{- if and (eq (include "bouncer.anyEnabled" .) "true") $bn.attach.enabled }}
+# ---------------------------------------------------------------------------
+#  ACCROCHAGE du bouncer : un routeur catch-all AU-DESSUS du `waf-catchall`
+#  de ce chart, vers le MÊME service Coraza — le sandwich WAF est conservé —
+#  plus, si bypassHosts est renseigné, un routeur SANS bouncer à priorité
+#  supérieure pour les hôtes à exclure.
+#
+#    bypass   catchAll.priority + 2   Host(...)         sans bouncer
+#    bouncer  catchAll.priority + 1   PathPrefix(`/`)   middleware bouncer
+#    (waf-catchall, +0 : n'est plus atteint, reste comme filet si celui-ci tombe)
+#
+#  🛑 POURQUOI PAS UN MIDDLEWARE D'ENTRYPOINT : il s'appliquerait à TOUTES les
+#     requêtes, y compris celles vers un serveur de captcha auto-hébergé — un
+#     visiteur en remédiation ne pourrait jamais charger le widget. Le plugin
+#     n'a pas d'exclusion par hôte : l'exclusion se décide au ROUTEUR.
+#     Toujours lister un serveur de captcha auto-hébergé dans bypassHosts.
+#
+#  ⚠️ Un routeur dont le middleware ne se résout pas est en erreur — mais LUI
+#     SEUL : le waf-catchall reprend alors le trafic, sans bouncer. L'échec
+#     dégrade au lieu de couper.
+#
+#  Entrypoints, service, priorité de base et bloc TLS sont repris du catch-all
+#  (catchAll.* / coraza.*) : rien à recopier, rien qui puisse dériver.
+# ---------------------------------------------------------------------------
+{{- if $bn.attach.bypassHosts }}
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ $bn.attach.name }}-bypass
+  labels:
+    {{- include "bouncer.labels" . | nindent 4 }}
+  annotations:
+    # Vague 3 : APRÈS les Middlewares (vague 2) que le routeur voisin nomme.
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  entryPoints:
+    {{- toYaml .Values.catchAll.entryPoints | nindent 4 }}
+  routes:
+    - kind: Rule
+      match: {{ range $i, $h := $bn.attach.bypassHosts }}{{ if $i }} || {{ end }}Host(`{{ $h }}`){{ end }}
+      priority: {{ add (int .Values.catchAll.priority) 2 }}
+      services:
+        - name: {{ .Values.coraza.service.name }}
+          port: {{ int .Values.coraza.port }}
+          scheme: http
+          passHostHeader: true
+          {{- if eq .Values.coraza.service.mode "clusterIP" }}
+          nativeLB: true
+          {{- end }}
+  tls:
+    {{- toYaml .Values.catchAll.tls | nindent 4 }}
+---
+{{- end }}
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ $bn.attach.name }}
+  labels:
+    {{- include "bouncer.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  entryPoints:
+    {{- toYaml .Values.catchAll.entryPoints | nindent 4 }}
+  routes:
+    - kind: Rule
+      match: {{ .Values.catchAll.match }}
+      priority: {{ add (int .Values.catchAll.priority) 1 }}
+      middlewares:
+        {{- if eq $bn.attach.middleware "captcha" }}
+        - name: {{ include "bouncer.captchaMiddlewareName" . }}
+        {{- else }}
+        - name: {{ include "bouncer.banMiddlewareName" . }}
+        {{- end }}
+      services:
+        - name: {{ .Values.coraza.service.name }}
+          port: {{ int .Values.coraza.port }}
+          scheme: http
+          passHostHeader: true
+          {{- if eq .Values.coraza.service.mode "clusterIP" }}
+          nativeLB: true
+          {{- end }}
+  tls:
+    {{- toYaml .Values.catchAll.tls | nindent 4 }}
+{{- end }}

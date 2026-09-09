@@ -806,6 +806,165 @@ de l'initContainer **et** son `grep -q` de garde. `initContainers` et
 `additionalContainers` sont rendus par le chart Traefik avec `toYaml` **sans**
 `tpl` : aucune value ne peut les conditionner.
 
+## Mises à jour transparentes (rollout)
+
+Le démarrage d'un pod Traefik de ce chart est **long et dépendant du réseau**
+(patch du Caddyfile, ~2 min de compilation Caddy, chargement du CRS, et —
+bouncer activé — téléchargement + compilation Yaegi du plugin). Une mise à
+jour de configuration ne doit jamais coûter cette phase d'init au trafic :
+
+- `traefik.updateStrategy` est **épinglé** à `maxUnavailable: 0` +
+  `maxSurge: 1` (c'est le défaut du chart 41.0.2, mais un bump amont ne doit
+  pas pouvoir le changer en silence) : le pod remplaçant est créé **à côté**
+  de l'ancien, qui sert jusqu'à Ready + `minReadySeconds` ;
+- `traefik.deployment.minReadySeconds: 30` : un remplaçant qui devient Ready
+  puis meurt (plugin mal chargé, OOM au chargement du CRS) n'a pas déjà fait
+  tuer l'ancien ;
+- `templates/rollout-guard.yaml` **refuse de rendre** toute combinaison qui
+  casserait cette transparence : stratégie absente ou sans surge,
+  `maxUnavailable > 0`, `hostPort` sur un entrypoint (deux pods coexistent
+  sur le nœud pendant le surge — un hostPort bloquerait le rollout). La
+  bascule du trafic est atomique via le Service NodePort
+  `externalTrafficPolicy: Local`, qui ne route que vers les pods Ready ;
+- bouncer activé, la garde exige en plus
+  `traefik.experimental.abortOnPluginFailure: true` : un plugin qui échoue au
+  démarrage ne produit jamais un pod Ready sans bouncer qui remplacerait
+  l'ancien en silence — le remplaçant ne démarre pas, l'ancien continue de
+  servir, l'échec est bruyant.
+
+Pour ASSUMER une stratégie disruptive (par ex. déploiement en `hostPort`, où
+le surge est impossible) : `rollout.allowDisruptiveUpdates: true` désactive
+ces gardes.
+
+## Bouncers CrowdSec (`bouncer`)
+
+Deux bouncers L7 **optionnels et indépendants** (désactivés par défaut),
+appuyés sur le plugin Traefik
+[`maxlerebourg/crowdsec-bouncer-traefik-plugin`](https://github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin),
+pensés pour fonctionner avec la stack du chart voisin `crowdsec-all-in-one` :
+
+- **`bouncer.ban`** — rejet pur des décisions `ban` (403 + page HTML) ;
+- **`bouncer.captcha`** — les décisions `captcha` suspendent la requête le
+  temps d'un contrôle (page + widget, pensé pour [Cap](https://capjs.js.org)
+  auto-hébergé) ; les `ban` restent rejetés par la même instance.
+
+**Rien ne tourne ici** : le bouncer est du code exécuté *dans* le processus
+Traefik. Le chart pose les Middlewares, la ConfigMap des pages et le Secret
+des clés ; il génère les clés d'API au rendu (préservées ensuite), en pose
+une copie dans le namespace CrowdSec et y enregistre les bouncers par un job
+PostSync (équivalent `cscli bouncers add`, idempotent).
+
+### Ce qui est vérifié avant de rendre
+
+Un bouncer activé sans son câblage échouerait en cluster de façon opaque
+(routeur en erreur, pod en `ContainerCreating`). Le chart refuse donc de
+rendre, avec le geste exact à faire :
+
+- `values.schema.json` — **`bouncer.crowdsec.namespace` et
+  `bouncer.crowdsec.lapiHost` n'ont pas de défaut** et sont exigés dès qu'un
+  bouncer est activé : il n'existe aucune valeur sûre à deviner ;
+- `templates/bouncer/guard.yaml` — le plugin doit être déclaré dans
+  `traefik.experimental.plugins.<pluginAlias>`, la ConfigMap des pages et le
+  Secret des clés doivent être montés (`traefik.deployment.additionalVolumes`
+  + `traefik.additionalVolumeMounts` — le subchart rend ces listes sans `tpl`,
+  ce chart ne peut pas les poser lui-même), les URL du captcha `custom`
+  doivent être renseignées, et `attach` doit être cohérent (catch-all actif,
+  middleware activé).
+
+🛑 Le plugin est **téléchargé et compilé au démarrage de Traefik**
+(plugins.traefik.io puis GitHub) : une dépendance de démarrage de l'entrée
+publique de plus, qui s'ajoute à celles des initContainers Coraza.
+
+### Activation minimale
+
+```yaml
+bouncer:
+  crowdsec:
+    namespace: crowdsec
+    lapiHost: crowdsec-service.crowdsec.svc.cluster.local:8080
+  ban:
+    enabled: true
+  attach:
+    enabled: true
+    middleware: ban
+
+traefik:
+  experimental:
+    abortOnPluginFailure: true   # requis (garde) : jamais de pod Ready sans bouncer
+    plugins:
+      bouncer:
+        moduleName: github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin
+        version: v1.4.4          # épingler une version relevée
+  deployment:
+    additionalVolumes:
+      - name: crowdsec-bouncer-pages
+        configMap: { name: crowdsec-bouncer-pages }
+      - name: crowdsec-bouncer-keys
+        secret: { secretName: crowdsec-bouncer-keys }
+  additionalVolumeMounts:
+    - { name: crowdsec-bouncer-pages, mountPath: /crowdsec/pages, readOnly: true }
+    - { name: crowdsec-bouncer-keys,  mountPath: /crowdsec/keys,  readOnly: true }
+```
+
+Côté stack CrowdSec : ouvrir la LAPI (port 8080) aux pods Traefik dans la
+NetworkPolicy de son namespace (`networkPolicy.extraIngress` de
+crowdsec-all-in-one), et router les scénarios voulus vers une décision
+`captcha` dans ses `profiles.yaml` si le bouncer captcha est utilisé.
+
+### Accrochage (`bouncer.attach`)
+
+Pose un routeur `catchAll.match` à `catchAll.priority + 1` vers le service
+Coraza — le sandwich WAF est conservé — portant le middleware choisi, et, si
+`bypassHosts` est renseigné, un routeur **sans** bouncer à `+ 2`. Entrypoints,
+service, priorité et TLS sont repris de `catchAll`/`coraza` : rien à recopier.
+Si le middleware ne se résout pas, seul ce routeur tombe et le `waf-catchall`
+reprend le trafic (sans bouncer) : l'échec dégrade au lieu de couper.
+
+🛑 Un serveur de captcha auto-hébergé doit être listé dans `bypassHosts` : le
+plugin n'a pas d'exclusion par hôte, et un visiteur en remédiation doit
+pouvoir charger le widget. Un hôte listé n'est plus protégé par CrowdSec —
+Coraza, lui, l'inspecte toujours.
+
+Alternative : laisser `attach.enabled: false` et référencer le middleware
+depuis vos Ingress/IngressRoute applicatifs (noms stables tant que
+`bouncer.hashSuffix` reste `false`).
+
+### Charte graphique
+
+Les pages embarquées sont neutres et s'habillent via `bouncer.branding`
+(`siteName`, `logo` — URL ou data-URI, recommandé pour rester sans dépendance
+réseau —, `primaryColor`, `backgroundColor`, `supportContact`, `lang`). Pour
+un contrôle total : `ban.overrideHtml` / `captcha.overrideHtml`.
+
+⚠️ Ces pages sont des templates **Go rendus par le plugin** (`{{ .ClientIP }}`,
+`{{ .SiteKey }}`, `{{ .FrontendJS }}`) : ne pas retirer ces marqueurs d'un
+HTML custom, et ne jamais les passer par `tpl`.
+
+Le plugin ne relit une page qu'à la **création** de l'instance du middleware :
+après modification, soit activer `bouncer.hashSuffix` (nom du Middleware
+suffixé de l'empreinte des pages → objet recréé → page relue ; avec ArgoCD,
+activer aussi `pages.waitJob` pour laisser le kubelet propager la ConfigMap),
+soit redémarrer les pods Traefik.
+
+### Rotation des clés d'API
+
+```bash
+kubectl delete secret crowdsec-bouncer-keys                  # namespace du release
+kubectl -n <ns-crowdsec> delete secret crowdsec-bouncer-keys # la copie
+helm upgrade ...    # régénère les clés et relance le register-job
+```
+
+### Adhérence à CrowdSec
+
+Toute l'adhérence est dans `bouncer.crowdsec` : le namespace de la stack, la
+LAPI, et l'accès DB du job d'enregistrement (défauts alignés sur
+crowdsec-all-in-one : Secret `crowdsec-secrets`, service `crowdsec-pgbouncer`).
+⚠️ Le job suppose le **schéma interne** de la table `bouncers` (validé contre
+CrowdSec v1.7.x, la version épinglée par crowdsec-all-in-one) : à revérifier
+sur un bump majeur de la stack. Pour s'en passer :
+`bouncer.registerJob.enabled: false` et enregistrer soi-même
+(`cscli bouncers add`, puis reporter les clés dans le Secret).
+
 ## Limites connues
 
 - **Règles à état non fiables.** Les collections `IP` / `SESSION` / `USER` de

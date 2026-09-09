@@ -1,0 +1,32 @@
+{{- $bn := .Values.bouncer }}
+{{- if $bn.ban.enabled }}
+# ---------------------------------------------------------------------------
+#  Middleware Traefik « ban » : applique les décisions de CrowdSec en REJET pur
+#  (statusCode + page ban.html). Aucun captcha : une IP en décision « captcha »
+#  n'est pas remédiée par CE middleware (utiliser le middleware captcha voisin).
+#
+#  Les pré-requis (plugin déclaré dans la configuration statique, ConfigMap et
+#  Secret montés dans le pod Traefik) sont vérifiés au rendu par
+#  bouncer/guard.yaml. Reste à l'accrocher : bouncer.attach (au-dessus du
+#  catch-all du WAF), ou une référence depuis vos Ingress/IngressRoute.
+#  🛑 Sur la couche la plus EXTERNE — celle qui voit l'IP RÉELLE du client.
+#     Ici : websecure, jamais l'entrypoint internal (le bouncer y jugerait
+#     127.0.0.1, donc tout le monde ou personne).
+# ---------------------------------------------------------------------------
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "bouncer.banMiddlewareName" . }}
+  labels:
+    {{- include "bouncer.labels" . | nindent 4 }}
+  annotations:
+    # Vague 2 : APRÈS la ConfigMap des pages (0) et le délai de propagation
+    # kubelet (hook, vague 1) — le plugin lit la page à la création de l'instance.
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  plugin:
+    # 🛑 CETTE CLÉ EST L'ALIAS DU PLUGIN dans la configuration statique de
+    # Traefik (traefik.experimental.plugins.<alias>), pas un nom libre.
+    {{ $bn.ban.pluginAlias }}:
+      {{- include "bouncer.pluginCommon" (list . "ban-api-key") | nindent 6 }}
+{{- end }}

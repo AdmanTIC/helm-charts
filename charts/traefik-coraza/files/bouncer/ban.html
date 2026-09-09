@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="%%LANG%%">
+<!-- Page servie sur une décision « ban » de CrowdSec (403 par défaut).
+     Fichier rendu par le PLUGIN Traefik, pas par Helm : les doubles accolades ({{ .ClientIP }})
+     sont interprétées par le plugin. Les marqueurs %%...%% sont remplacés par Helm
+     (cf. helper traefikBouncer.renderPage) depuis traefikBouncer.branding. -->
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex">
+    <title>%%TITLE_PREFIX%%Accès refusé</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: %%BACKGROUND_COLOR%%;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            text-align: center;
+            max-width: 600px;
+            background: #ffffff;
+            border-radius: 16px;
+            padding: 50px 40px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+        }
+
+        .logo {
+            margin-bottom: 30px;
+        }
+
+        .logo img {
+            max-width: 250px;
+            max-height: 120px;
+            height: auto;
+        }
+
+        .icon {
+            margin-bottom: 24px;
+        }
+
+        h1 {
+            font-size: 24px;
+            color: #1a1a2e;
+            margin-bottom: 16px;
+            font-weight: 700;
+        }
+
+        p {
+            font-size: 17px;
+            color: #555;
+            line-height: 1.7;
+            margin-bottom: 12px;
+        }
+
+        .separator {
+            width: 60px;
+            height: 4px;
+            background: %%PRIMARY_COLOR%%;
+            border-radius: 2px;
+            margin: 24px auto;
+        }
+
+        .info {
+            font-size: 15px;
+            color: #888;
+            margin-top: 20px;
+        }
+
+        .contact {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f7f9fc;
+            border-radius: 10px;
+            font-size: 15px;
+            color: #555;
+            line-height: 1.7;
+        }
+
+        .contact strong {
+            color: %%PRIMARY_COLOR%%;
+        }
+
+        .details {
+            margin-top: 18px;
+            padding-top: 16px;
+            border-top: 1px solid #e3e9f2;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 13px;
+            color: #7a869a;
+            word-break: break-all;
+            text-align: left;
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 36px 24px;
+            }
+
+            .logo img {
+                max-width: 180px;
+            }
+
+            h1 {
+                font-size: 22px;
+            }
+
+            p {
+                font-size: 15px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        %%LOGO_BLOCK%%
+
+        <svg class="icon" width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="%%PRIMARY_COLOR%%" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3l7.5 3v5.2c0 4.4-3 8.2-7.5 9.6-4.5-1.4-7.5-5.2-7.5-9.6V6z"></path>
+            <line x1="9.5" y1="9.5" x2="14.5" y2="14.5"></line>
+            <line x1="14.5" y1="9.5" x2="9.5" y2="14.5"></line>
+        </svg>
+
+        <h1>Accès refusé</h1>
+
+        <div class="separator"></div>
+
+        <p>Par mesure de sécurité et pour préserver nos systèmes, vos requêtes sont refusées.</p>
+
+        <p class="info">Ce refus est temporaire et concerne l'adresse depuis laquelle vous vous connectez. Si vous partagez votre connexion (4G, réseau partagé, VPN), il peut être dû à un autre appareil que le vôtre.</p>
+
+        <div class="contact">
+            Si vous pensez qu'il s'agit d'une erreur, signalez-le à <strong>%%SUPPORT_TEXT%%</strong> en lui copiant les trois lignes ci-dessous.
+            <div class="details">
+                <div id="d-url">Page&nbsp;: -</div>
+                <div id="d-time">Heure&nbsp;: -</div>
+                <div>Adresse&nbsp;: {{ .ClientIP }}</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        (function () {
+            try {
+                document.getElementById('d-url').textContent = 'Page : ' + window.location.href;
+                document.getElementById('d-time').textContent = 'Heure : ' + new Date().toLocaleString('%%LANG%%');
+            } catch (e) {}
+        })();
+    </script>
+</body>
+</html>

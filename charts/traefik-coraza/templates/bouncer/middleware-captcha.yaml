@@ -1,0 +1,61 @@
+{{- $bn := .Values.bouncer }}
+{{- if $bn.captcha.enabled }}
+# ---------------------------------------------------------------------------
+#  Middleware Traefik « captcha » : les décisions « captcha » de CrowdSec
+#  suspendent la requête le temps d'un contrôle (page captcha.html + widget) ;
+#  les décisions « ban » restent rejetées (page ban.html), le plugin gère les
+#  deux types sur la même instance.
+#
+#  Mêmes pré-requis que le middleware ban (vérifiés par bouncer/guard.yaml)
+#  + un fournisseur de captcha :
+#    • provider `custom` (défaut) : pensé pour Cap (https://capjs.js.org)
+#      auto-hébergé — jsURL / validateURL / widget.* requis ;
+#      🛑 le serveur de captcha DOIT être routé HORS de ce middleware (un
+#      visiteur en remédiation doit pouvoir charger le widget) : le plugin n'a
+#      pas d'exclusion par hôte, l'exclusion se décide au ROUTEUR —
+#      cf. bouncer.attach.bypassHosts.
+#    • hcaptcha / recaptcha / turnstile : services tiers, seuls les fichiers
+#      de clés (site/secret) sont requis.
+# ---------------------------------------------------------------------------
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "bouncer.captchaMiddlewareName" . }}
+  labels:
+    {{- include "bouncer.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  plugin:
+    # 🛑 CETTE CLÉ EST L'ALIAS DU PLUGIN dans la configuration statique de
+    # Traefik (traefik.experimental.plugins.<alias>), pas un nom libre.
+    {{ $bn.captcha.pluginAlias }}:
+      {{- include "bouncer.pluginCommon" (list . "captcha-api-key") | nindent 6 }}
+
+      # --- Le captcha ------------------------------------------------------
+      captchaProvider: {{ $bn.captcha.provider | quote }}
+      {{- if eq $bn.captcha.provider "custom" }}
+      # Le script du widget, chargé par le NAVIGATEUR : URL publique.
+      captchaCustomJsUrl: {{ $bn.captcha.jsURL | quote }}
+      # La validation du jeton, faite par TRAEFIK : URL interne au cluster de
+      # préférence (aller-retour serveur à serveur).
+      captchaCustomValidateUrl: {{ $bn.captcha.validateURL | quote }}
+      # Le champ du formulaire qui porte le jeton (imposé par le widget).
+      captchaCustomResponse: {{ $bn.captcha.responseField | quote }}
+      # Passé au gabarit comme .FrontendKey — exigé par le plugin même si la
+      # page fournie ne s'en sert pas.
+      captchaCustomKey: {{ $bn.captcha.frontendKey | quote }}
+      {{- end }}
+
+      # 🛑 Clés publique et secrète du site captcha : lues dans des FICHIERS
+      # montés dans le pod Traefik, jamais recopiées dans cet objet (qui se lit
+      # en clair dans un kubectl get middleware -o yaml).
+      captchaSiteKeyFile: {{ printf "%s/%s" (default $bn.secrets.mountPath $bn.captcha.keys.mountPath) $bn.captcha.keys.siteKeyFile | quote }}
+      captchaSecretKeyFile: {{ printf "%s/%s" (default $bn.secrets.mountPath $bn.captcha.keys.mountPath) $bn.captcha.keys.secretKeyFile | quote }}
+
+      # Durée pendant laquelle un captcha résolu vaut laissez-passer pour l'IP.
+      captchaGracePeriodSeconds: {{ $bn.captcha.gracePeriodSeconds | quote }}
+
+      # Le gabarit de la page, monté depuis la ConfigMap des pages.
+      captchaFilePath: {{ printf "%s/captcha.html" $bn.pages.mountPath | quote }}
+{{- end }}

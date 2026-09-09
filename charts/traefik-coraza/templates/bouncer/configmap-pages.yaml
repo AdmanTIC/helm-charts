@@ -1,0 +1,38 @@
+{{- $bn := .Values.bouncer }}
+{{- if eq (include "bouncer.anyEnabled" .) "true" }}
+# ---------------------------------------------------------------------------
+#  Les pages servies par le plugin bouncer : ban.html (décision « ban », 403)
+#  et captcha.html (décision « captcha »). Montées dans le pod Traefik via
+#  traefik.deployment.additionalVolumes + traefik.additionalVolumeMounts —
+#  le plugin lit des FICHIERS, pas des objets Kubernetes. La garde
+#  bouncer/guard.yaml refuse de rendre si les montages manquent.
+#
+#  ⚠️ Ces fichiers sont des templates GO rendus par le PLUGIN, pas par Helm :
+#     ils portent des doubles accolades ({{ "{{ .ClientIP }}" }}, {{ "{{ .SiteKey }}" }}) et
+#     c'est voulu. Helm n'y substitue que les marqueurs %%...%% de la charte
+#     graphique (bouncer.branding) — cf. bouncer/_helpers.tpl.
+#
+#  ⚠️ Le plugin ne relit une page qu'à la CRÉATION de l'instance du middleware.
+#     Après modification d'une page : soit activer bouncer.hashSuffix (le nom
+#     du Middleware change avec la page, l'objet est recréé), soit redémarrer
+#     les pods Traefik.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $bn.pages.configMapName }}
+  labels:
+    {{- include "bouncer.labels" . | nindent 4 }}
+  annotations:
+    # Vague 0 (ArgoCD) : la page d'abord, les Middlewares qui la lisent en
+    # vague 2, et entre les deux le délai de propagation kubelet
+    # (bouncer/hook-wait-page.yaml, opt-in).
+    argocd.argoproj.io/sync-wave: "0"
+data:
+  ban.html: |
+{{ include "bouncer.banPage" . | indent 4 }}
+{{- if $bn.captcha.enabled }}
+  captcha.html: |
+{{ include "bouncer.captchaPage" . | indent 4 }}
+{{- end }}
+{{- end }}
