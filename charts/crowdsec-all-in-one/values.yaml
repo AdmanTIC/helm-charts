@@ -994,6 +994,14 @@ calicoBouncer:
   # Plafond du backoff exponentiel sur erreur (réseau, K8s API). En secondes.
   backoffMaxSeconds: 300
 
+  # Délai de grâce (en secondes) avant qu'un NOUVEAU ban ne soit matérialisé
+  # dans la GNP. Laisse le temps à un bouncer L7 (nginx/traefik) de servir une
+  # 403 propre ou un captcha à un utilisateur légitime avant que le réseau ne
+  # coupe complètement. 0 = application immédiate. La granularité effective est
+  # bornée par pollIntervalSeconds. Les bans déjà actifs au démarrage du
+  # bouncer (snapshot initial) sont appliqués immédiatement, sans délai.
+  banApplyDelaySeconds: 0
+
   logLevel: INFO
 
   # ---------------------------------------------------------------------------

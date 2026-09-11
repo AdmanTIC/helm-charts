@@ -418,6 +418,11 @@ calicoBouncer:
 
   pollIntervalSeconds: 10           # cadence du stream (plus court = + de requêtes)
 
+  # Délai de grâce avant qu'un nouveau ban n'entre dans la GNP : laisse un
+  # bouncer L7 (traefik/nginx) servir une 403 propre ou un captcha avant que
+  # le réseau ne coupe. 0 = immédiat.
+  banApplyDelaySeconds: 120
+
   policy:
     name: crowdsec-bans
     selector: "has(kubernetes.io/hostname)"  # pour auto-HE

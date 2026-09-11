@@ -39,6 +39,9 @@ Optional env (defaults shown):
                               an L7 bouncer (nginx/traefik) and want L3 hard-
                               block for captcha decisions too.
   LAPI_VERIFY_TLS=true
+  BAN_APPLY_DELAY_SECONDS=0     grace delay before a new ban lands in the GNP,
+                              so an L7 bouncer can serve a clean 403/captcha
+                              first (resolution = POLL_INTERVAL_SECONDS)
   POLL_INTERVAL_SECONDS=10
   BACKOFF_MAX_SECONDS=300
   LEASE_NAME=crowdsec-calico-bouncer
@@ -85,6 +88,13 @@ LAPI_API_KEY = os.environ["LAPI_API_KEY"]
 LAPI_VERIFY_TLS = os.getenv("LAPI_VERIFY_TLS", "true").lower() == "true"
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "10"))
 BACKOFF_MAX = int(os.getenv("BACKOFF_MAX_SECONDS", "300"))
+
+# Grace delay before a NEW ban is materialised in the GNP. Gives an L7
+# bouncer (nginx/traefik) time to serve a clean 403/captcha to a legitimate
+# user before the network goes dark for them. 0 = immediate. Resolution is
+# bounded by POLL_INTERVAL. Bans already active when the bouncer takes over
+# (initial snapshot after leader acquisition) are applied immediately.
+BAN_APPLY_DELAY = float(os.getenv("BAN_APPLY_DELAY_SECONDS", "0"))
 
 # Decision types that we materialise as a Calico Deny rule. Calico is L3/L4,
 # so "captcha" / "throttle" cannot be honoured as such — including them here
@@ -371,7 +381,12 @@ def stream_loop(
     # IP. Tracking by id avoids this: we add the new id BEFORE removing the
     # old id, so the union of values always contains the IP.
     decisions: dict[int, str] = {}
+    # Per-CIDR earliest apply time (epoch seconds). Keyed by CIDR, not by
+    # decision id, so an id swap on the same IP (delete old / insert new)
+    # never re-arms the grace delay — the IP stays continuously banned.
+    apply_at: dict[str, float] = {}
     startup = True
+    initial_sync = True
     backoff = 1.0
     was_leader = False
 
@@ -386,7 +401,9 @@ def stream_loop(
         if not was_leader:
             log.info("became leader — refetching full snapshot")
             decisions = {}
+            apply_at = {}
             startup = True
+            initial_sync = True
             gnp.reset_cache()
             was_leader = True
 
@@ -417,11 +434,24 @@ def stream_loop(
             # emits an id swap for the same IP (delete old, insert new), the
             # final dict contains the new id pointing to that CIDR — the IP
             # is preserved.
+            #
+            # Deletions match by id AND by CIDR: the LAPI deduplicates the
+            # stream per value, so a "delete all decisions for IP X" (several
+            # decision ids) can surface as a single deleted entry whose id we
+            # may not even hold. Dropping every id that maps to the deleted
+            # CIDR guarantees the IP leaves the GNP; a same-tick re-insert
+            # (id swap) is processed after and puts it back.
             removed = 0
             for d in del_decisions:
                 did = d.get("id")
                 if did is not None and decisions.pop(did, None) is not None:
                     removed += 1
+                cidr = normalize_cidr(d.get("scope", ""), d.get("value", ""))
+                if cidr:
+                    stale = [i for i, c in decisions.items() if c == cidr]
+                    for i in stale:
+                        del decisions[i]
+                    removed += len(stale)
 
             added = 0
             for d in new_decisions:
@@ -437,25 +467,43 @@ def stream_loop(
                     added += 1
                 decisions[did] = cidr
 
-            nets = set(decisions.values())
+            now_ts = time.time()
+            cidrs = set(decisions.values())
+
+            # Schedule newly-seen CIDRs; forget CIDRs no decision pins anymore.
+            # The initial snapshot after leader acquisition applies immediately
+            # (those bans are already old); only fresh deltas get the grace
+            # delay.
+            for c in cidrs:
+                if c not in apply_at:
+                    apply_at[c] = now_ts if initial_sync else now_ts + BAN_APPLY_DELAY
+            for c in list(apply_at):
+                if c not in cidrs:
+                    del apply_at[c]
+
+            nets = {c for c in cidrs if apply_at[c] <= now_ts}
+            pending = len(cidrs) - len(nets)
 
             if nets != gnp.known_nets:
                 log.info(
-                    "delta: +%d -%d decisions → %d active, %d unique nets",
+                    "delta: +%d -%d decisions → %d active, %d nets enforced, %d pending delay",
                     added,
                     removed,
                     len(decisions),
                     len(nets),
+                    pending,
                 )
                 gnp.ensure(nets)
             else:
                 log.debug(
-                    "no GNP change (%d active decisions, %d unique nets)",
+                    "no GNP change (%d active decisions, %d nets enforced, %d pending delay)",
                     len(decisions),
                     len(nets),
+                    pending,
                 )
 
             startup = False
+            initial_sync = False
             backoff = 1.0
             time.sleep(POLL_INTERVAL)
 

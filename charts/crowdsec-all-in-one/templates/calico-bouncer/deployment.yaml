@@ -79,6 +79,8 @@ spec:
               value: {{ .Values.calicoBouncer.pollIntervalSeconds | quote }}
             - name: BACKOFF_MAX_SECONDS
               value: {{ .Values.calicoBouncer.backoffMaxSeconds | quote }}
+            - name: BAN_APPLY_DELAY_SECONDS
+              value: {{ .Values.calicoBouncer.banApplyDelaySeconds | default 0 | quote }}
             - name: LEASE_NAME
               value: {{ .Values.calicoBouncer.leaderElection.leaseName | quote }}
             - name: LEASE_DURATION_SECONDS
