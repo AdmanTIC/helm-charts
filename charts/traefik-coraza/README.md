@@ -24,39 +24,34 @@ templates : ils vivent dans les values du subchart, qui les rend via
 
 ## Version du subchart et compatibilité Kubernetes
 
-🛑 **Cette version du chart (`0.6.1`) est la release de rétrocompatibilité
-K8s 1.23.** Le subchart Traefik est épinglé en **39.0.9 (Traefik v3.6.13)**,
-dernière version stable déclarant `kubeVersion >=1.22.0-0`. À partir de la
-majeure 40, le chart amont exige `>=1.25.0-0`.
+Le subchart Traefik est épinglé en **41.0.2 (Traefik v3.7.5)**, qui exige
+`kubeVersion >=1.25.0-0`.
 
-| | Ce chart `0.6.1` | Versions suivantes |
+| | Ce chart (`0.7.0`+) | Release `0.6.1` |
 |---|---|---|
-| subchart Traefik | 39.0.9 (v3.6.13) | 41.x (v3.7.x) |
-| Kubernetes | **1.22+** (vérifié sur 1.23.6) | 1.25+ |
+| subchart Traefik | 41.0.2 (v3.7.5) | 39.0.9 (v3.6.13) |
+| Kubernetes | **1.25+** | **1.22+** (vérifié sur 1.23.6) |
 
-Rendu comparé entre les deux : les arguments Traefik sont **identiques au
-caractère près**, et le diff complet des manifests se limite au label
-`helm.sh/chart`. Le montage sandwich, le sidecar, le catch-all et le chemin
-bouncer sont inchangés.
-
-Ce que 1.23 dégrade sans casser : `maxSurge` sur DaemonSet est **bêta**
-(GA en 1.25) alors qu'il porte le rollout transparent ; `internalTrafficPolicy`
-est bêta (GA 1.26, mode `clusterIP` seulement) ; et les validations CEL des CRD
-sont **élaguées en silence** — les CRD s'installent, la validation est plus
-faible. Enfin, 1.23 est en fin de support amont depuis février 2023.
+**Pour un cluster en 1.23, utiliser la release `0.6.1`**, publiée pour cet
+usage. Les deux rendus sont équivalents : arguments Traefik identiques au
+caractère près, diff complet des manifests limité au label `helm.sh/chart`.
+Sur 1.23, `maxSurge` (DaemonSet) et `internalTrafficPolicy` sont en bêta plutôt
+que GA, et les validations CEL des CRD sont élaguées en silence — la validation
+est plus faible, rien ne casse. 1.23 est par ailleurs en fin de support amont
+depuis février 2023.
 
 ### Clés du subchart, selon la majeure
 
-Piège si vous reprenez une configuration Traefik d'une autre majeure : le chart
-amont a un schéma JSON qui **rejette** les clés de l'autre forme.
+Piège en changeant de majeure : le chart amont a un schéma JSON qui **rejette**
+les clés de l'autre forme.
 
-| Clé en 39.x (ce chart) | Clé en 41.x |
+| Clé en 41.x (ce chart) | Clé en 39.x (`0.6.1`) |
 |---|---|
-| `service.type`, `service.externalTrafficPolicy` | `service.spec.type`, `service.spec.externalTrafficPolicy` |
-| `logs.general` / `logs.access` | `log` / `accessLog` |
+| `service.spec.type`, `service.spec.externalTrafficPolicy` | `service.type`, `service.externalTrafficPolicy` |
+| `log` / `accessLog` | `logs.general` / `logs.access` |
 
-Deux autres clés avaient bougé plus tôt en amont et ont **déjà** leur forme
-actuelle en 39.x — rien à convertir :
+Deux autres clés avaient bougé plus tôt en amont et ont la même forme dans les
+deux majeures :
 
 | Ancienne clé | Forme actuelle |
 |---|---|
@@ -80,7 +75,7 @@ helm upgrade --install traefik . -n ingress-controller --create-namespace
 
 Le nom du release compte : voir « Remplacer un Traefik existant » ci-dessous.
 
-Pas de `helm dependency update` nécessaire : `charts/traefik-39.0.9.tgz` est
+Pas de `helm dependency update` nécessaire : `charts/traefik-41.0.2.tgz` est
 versionné.
 
 ### Pourquoi le tarball du subchart est committé
@@ -843,7 +838,7 @@ bouncer activé — téléchargement + compilation Yaegi du plugin). Une mise à
 jour de configuration ne doit jamais coûter cette phase d'init au trafic :
 
 - `traefik.updateStrategy` est **épinglé** à `maxUnavailable: 0` +
-  `maxSurge: 1` (c'est le défaut du chart 39.0.9, mais un bump amont ne doit
+  `maxSurge: 1` (c'est le défaut du chart 41.0.2, mais un bump amont ne doit
   pas pouvoir le changer en silence) : le pod remplaçant est créé **à côté**
   de l'ancien, qui sert jusqu'à Ready + `minReadySeconds` ;
 - `traefik.deployment.minReadySeconds: 30` : un remplaçant qui devient Ready
