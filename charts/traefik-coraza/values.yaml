@@ -675,11 +675,15 @@ standaloneNaming:
 
 # -----------------------------------------------------------------------------
 #  Subchart Traefik — overrides
-#  Clés alignées sur le chart 41.0.2 (cf. Chart.yaml). Attention aux
-#  renommages amont : `service.type` → `service.spec.type`,
-#  `logs.general`/`logs.access` → `log`/`accessLog`,
-#  `ports.web.redirections` → `ports.web.http.redirections`,
-#  `ports.websecure.tls` → `ports.websecure.http.tls`.
+#  Clés alignées sur le chart 39.0.9 (cf. Chart.yaml), la dernière majeure
+#  compatible K8s 1.23. Deux clés changent de forme à partir du chart 41.x —
+#  à convertir si le subchart est bumpé :
+#      `service.type`            → `service.spec.type`
+#      `service.externalTrafficPolicy` → `service.spec.externalTrafficPolicy`
+#      `logs.general`/`logs.access`    → `log`/`accessLog`
+#  Deux autres avaient bougé plus tôt et ont déjà leur forme actuelle ici :
+#      `ports.web.redirections`  → `ports.web.http.redirections`
+#      `ports.websecure.tls`     → `ports.websecure.http.tls`
 # -----------------------------------------------------------------------------
 traefik:
   enabled: true
@@ -1190,13 +1194,14 @@ traefik:
   # surge), CHAQUE mise à jour de configuration laisserait chaque nœud sans
   # ingress pendant toute cette phase d'init.
   #
-  # D'où ce réglage, ÉPINGLÉ ici (c'est le défaut du chart 41.0.2, mais un bump
+  # D'où ce réglage, ÉPINGLÉ ici (c'est le défaut du chart 39.0.9, mais un bump
   # amont ne doit pas pouvoir le changer en silence) : le pod remplaçant est
   # créé À CÔTÉ de l'ancien (surge), qui continue de servir jusqu'à ce que le
   # nouveau soit Ready + minReadySeconds. Coupure : zéro.
   #
   # Ce que ça suppose — vérifié au rendu par templates/rollout-guard.yaml :
-  #   • kubeVersion >= 1.25 (maxSurge sur DaemonSet GA) — le chart exige 1.27 ;
+  #   • kubeVersion >= 1.25 (maxSurge sur DaemonSet GA) — c'est le plancher
+  #     déclaré par Chart.yaml, aligné sur celui du subchart Traefik ;
   #   • PAS de hostPort sur les entrypoints (deux pods coexistent sur le nœud
   #     pendant le surge : un hostPort entrerait en conflit). L'exposition
   #     passe par le Service NodePort externalTrafficPolicy: Local, qui ne
@@ -1211,14 +1216,14 @@ traefik:
   # --- Service ---------------------------------------------------------------
   service:
     enabled: true
-    # Chart >= 34 : le type et le reste du ServiceSpec passent par `spec`.
-    # Il n'y a plus de `service.type` ni de `service.externalTrafficPolicy`.
-    spec:
-      type: NodePort
-      # Sans ça : SNAT par kube-proxy → perte de l'IP source.
-      # Corollaire : seuls les nœuds portant un pod répondent — cohérent avec
-      # le DaemonSet.
-      externalTrafficPolicy: Local
+    # Chart 39.x : `type` et `externalTrafficPolicy` sont des clés DIRECTES.
+    # (À partir du chart 41.x elles passent sous `spec` — ce chart est épinglé
+    # en 39.0.9 pour rester compatible K8s 1.23, cf. Chart.yaml.)
+    type: NodePort
+    # Sans ça : SNAT par kube-proxy → perte de l'IP source.
+    # Corollaire : seuls les nœuds portant un pod répondent — cohérent avec
+    # le DaemonSet.
+    externalTrafficPolicy: Local
 
   # --- Entrypoints -----------------------------------------------------------
   ports:
@@ -1293,17 +1298,18 @@ traefik:
       # catch-all les court-circuite ; sur internal ils sont seuls.
 
   # --- Observabilité ---------------------------------------------------------
-  # Chart >= 34 : `log` et `accessLog` sont deux clés de premier niveau ;
-  # il n'y a plus de `logs.general` / `logs.access`.
-  log:
-    level: INFO
-    format: json
+  # Chart 39.x : `logs.general` / `logs.access`. (À partir du chart 41.x ce
+  # sont deux clés de premier niveau `log` / `accessLog`.)
+  logs:
+    general:
+      level: INFO
+      format: json
 
-  accessLog:
-    # Nécessaire pour vérifier ClientHost, donc la propagation de l'IP client
-    # réelle jusqu'à l'entrypoint internal.
-    enabled: true
-    format: json
+    access:
+      # Nécessaire pour vérifier ClientHost, donc la propagation de l'IP client
+      # réelle jusqu'à l'entrypoint internal.
+      enabled: true
+      format: json
 
   metrics:
     prometheus:

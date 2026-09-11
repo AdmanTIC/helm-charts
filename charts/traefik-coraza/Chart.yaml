@@ -5,10 +5,23 @@ description: |
   « sandwich » : websecure (TLS) → sidecar Coraza → entrypoint interne loopback
   → Ingress applicatifs. cert-manager reste seul maître du TLS.
 type: application
-kubeVersion: ">=1.27.0-0"
+# RELEASE DE RÉTROCOMPATIBILITÉ K8s 1.23 — subchart épinglé en 39.0.9.
+#
+# Plancher hérité du subchart Traefik 39.x. Aucune API rendue par ce chart
+# n'exige mieux : v1, apps/v1, batch/v1, networking.k8s.io/v1, rbac/v1,
+# traefik.io/v1alpha1. Rendu vérifié sur --kube-version 1.23.6.
+#
+# Ce que 1.23 dégrade sans casser, à savoir avant de déployer :
+#   • maxSurge sur DaemonSet est BÊTA (GA en 1.25) — activé par défaut depuis
+#     1.22, mais c'est ce qui porte le rollout transparent du chart ;
+#   • internalTrafficPolicy est BÊTA (GA 1.26) — mode coraza.service.mode:
+#     clusterIP uniquement ;
+#   • les validations CEL des CRD (x-kubernetes-validations) sont élaguées
+#     en silence : les CRD s'installent, la validation est plus faible.
+kubeVersion: ">=1.22.0-0"
 
 # version du chart wrapper
-version: 0.6.0
+version: 0.6.1
 # Version du CRS embarquée dans l'image Coraza (OWASP_CRS/4.28.0). Purement
 # documentaire : le tag réellement déployé est écrit dans values.yaml, à un
 # emplacement par conteneur, et doit être épinglé à la main.
@@ -26,11 +39,12 @@ maintainers:
   - name: AdmanTIC
 
 dependencies:
-  # Chart officiel. Version relevée le 2026-07-29 (`helm search repo
-  # traefik/traefik --versions`) : 41.0.2 → Traefik v3.7.6.
-  # Épinglé volontairement, pas de range : la syntaxe de règles v3 et les clés
-  # d'override de values.yaml sont validées contre CETTE version.
+  # Chart officiel, ÉPINGLÉ en 39.0.9 (Traefik v3.6.13) : c'est la dernière
+  # version stable déclarant kubeVersion >=1.22.0-0. À partir de la majeure 40
+  # le chart amont exige >=1.25.0-0, ce qui exclut les clusters 1.23.
+  # Pas de range : les clés d'override de values.yaml sont validées contre
+  # CETTE version (cf. README § « Clés du subchart »).
   - name: traefik
-    version: "41.0.2"
+    version: "39.0.9"
     repository: https://traefik.github.io/charts
     condition: traefik.enabled

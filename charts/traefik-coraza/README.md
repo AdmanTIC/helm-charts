@@ -22,15 +22,44 @@ Le sidecar Coraza et l'initContainer qui patche le Caddyfile ne sont pas des
 templates : ils vivent dans les values du subchart, qui les rend via
 `deployment.additionalContainers` / `deployment.initContainers`.
 
-## Clés du subchart renommées en amont
+## Version du subchart et compatibilité Kubernetes
 
-Piège si vous reprenez une configuration Traefik antérieure : quatre clés ont
-changé de place, et le chart 41 a un schéma JSON qui **rejette** les anciennes.
+🛑 **Cette version du chart (`0.6.1`) est la release de rétrocompatibilité
+K8s 1.23.** Le subchart Traefik est épinglé en **39.0.9 (Traefik v3.6.13)**,
+dernière version stable déclarant `kubeVersion >=1.22.0-0`. À partir de la
+majeure 40, le chart amont exige `>=1.25.0-0`.
 
-| Ancienne clé | Clé 41.0.2 |
+| | Ce chart `0.6.1` | Versions suivantes |
+|---|---|---|
+| subchart Traefik | 39.0.9 (v3.6.13) | 41.x (v3.7.x) |
+| Kubernetes | **1.22+** (vérifié sur 1.23.6) | 1.25+ |
+
+Rendu comparé entre les deux : les arguments Traefik sont **identiques au
+caractère près**, et le diff complet des manifests se limite au label
+`helm.sh/chart`. Le montage sandwich, le sidecar, le catch-all et le chemin
+bouncer sont inchangés.
+
+Ce que 1.23 dégrade sans casser : `maxSurge` sur DaemonSet est **bêta**
+(GA en 1.25) alors qu'il porte le rollout transparent ; `internalTrafficPolicy`
+est bêta (GA 1.26, mode `clusterIP` seulement) ; et les validations CEL des CRD
+sont **élaguées en silence** — les CRD s'installent, la validation est plus
+faible. Enfin, 1.23 est en fin de support amont depuis février 2023.
+
+### Clés du subchart, selon la majeure
+
+Piège si vous reprenez une configuration Traefik d'une autre majeure : le chart
+amont a un schéma JSON qui **rejette** les clés de l'autre forme.
+
+| Clé en 39.x (ce chart) | Clé en 41.x |
 |---|---|
 | `service.type`, `service.externalTrafficPolicy` | `service.spec.type`, `service.spec.externalTrafficPolicy` |
 | `logs.general` / `logs.access` | `log` / `accessLog` |
+
+Deux autres clés avaient bougé plus tôt en amont et ont **déjà** leur forme
+actuelle en 39.x — rien à convertir :
+
+| Ancienne clé | Forme actuelle |
+|---|---|
 | `ports.web.redirections` | `ports.web.http.redirections` |
 | `ports.websecure.tls` | `ports.websecure.http.tls` |
 
@@ -51,7 +80,7 @@ helm upgrade --install traefik . -n ingress-controller --create-namespace
 
 Le nom du release compte : voir « Remplacer un Traefik existant » ci-dessous.
 
-Pas de `helm dependency update` nécessaire : `charts/traefik-41.0.2.tgz` est
+Pas de `helm dependency update` nécessaire : `charts/traefik-39.0.9.tgz` est
 versionné.
 
 ### Pourquoi le tarball du subchart est committé
@@ -814,7 +843,7 @@ bouncer activé — téléchargement + compilation Yaegi du plugin). Une mise à
 jour de configuration ne doit jamais coûter cette phase d'init au trafic :
 
 - `traefik.updateStrategy` est **épinglé** à `maxUnavailable: 0` +
-  `maxSurge: 1` (c'est le défaut du chart 41.0.2, mais un bump amont ne doit
+  `maxSurge: 1` (c'est le défaut du chart 39.0.9, mais un bump amont ne doit
   pas pouvoir le changer en silence) : le pod remplaçant est créé **à côté**
   de l'ancien, qui sert jusqu'à Ready + `minReadySeconds` ;
 - `traefik.deployment.minReadySeconds: 30` : un remplaçant qui devient Ready
@@ -850,9 +879,11 @@ pensés pour fonctionner avec la stack du chart voisin `crowdsec-all-in-one` :
 
 **Rien ne tourne ici** : le bouncer est du code exécuté *dans* le processus
 Traefik. Le chart pose les Middlewares, la ConfigMap des pages et le Secret
-des clés ; il génère les clés d'API au rendu (préservées ensuite), en pose
-une copie dans le namespace CrowdSec et y enregistre les bouncers par un job
-PostSync (équivalent `cscli bouncers add`, idempotent).
+des clés ; il génère les clés d'API au rendu, en pose une copie dans le
+namespace CrowdSec et y enregistre les bouncers par un job PostSync
+(équivalent `cscli bouncers add`, idempotent). ⚠️ La préservation d'une clé
+d'un rendu à l'autre repose sur un `lookup`, **qui ne fonctionne pas sous
+ArgoCD** — cf. « Rotation des clés d'API » plus bas.
 
 ### Ce qui est vérifié avant de rendre
 
@@ -948,11 +979,47 @@ soit redémarrer les pods Traefik.
 
 ### Rotation des clés d'API
 
+> 🛑 **Sous ArgoCD, les clés sont re-tirées à CHAQUE synchronisation.**
+> ArgoCD rend avec `helm template` sans accès au cluster : le `lookup` censé
+> préserver les clés existantes rend toujours `nil`. Vérifiable en local — deux
+> `helm template` successifs donnent deux clés. `helm.sh/resource-policy: keep`
+> et `Prune=false` n'empêchent que la *suppression* de l'objet, pas la
+> réécriture de son contenu. La rotation n'est donc pas un geste délibéré : elle
+> arrive toute seule.
+
+Après **tout** changement de clé, volontaire ou subi, deux choses restent
+désalignées :
+
+- **le pod Traefik**, qui garde l'ancienne clé — le plugin lit le fichier monté
+  à l'instanciation du middleware, pas à chaque requête ;
+- **la ligne du bouncer côté CrowdSec**, que la mise à jour `ON CONFLICT` du job
+  d'enregistrement ne suffit pas à remettre d'aplomb.
+
+D'où des 403 jusqu'à ce que les deux soient repris à la main. Seule séquence qui
+fait foi :
+
+```bash
+# 1. supprimer l'enregistrement côté CrowdSec
+kubectl -n <ns-crowdsec> exec deploy/<pod-crowdsec> -- \
+  cscli bouncers delete <bouncer.ban.bouncerName>
+
+# 2. redémarrer Traefik pour que le plugin relise la clé montée
+kubectl -n <ns-traefik> rollout restart daemonset/traefik
+```
+
+Le job d'enregistrement (hook PostSync) réinscrit le bouncer à la
+synchronisation suivante.
+
+En **Helm pur**, avec accès au cluster, le `lookup` fonctionne et les clés sont
+bien préservées d'un upgrade à l'autre. Pour forcer une rotation :
+
 ```bash
 kubectl delete secret crowdsec-bouncer-keys                  # namespace du release
 kubectl -n <ns-crowdsec> delete secret crowdsec-bouncer-keys # la copie
 helm upgrade ...    # régénère les clés et relance le register-job
 ```
+
+suivie des deux mêmes gestes ci-dessus.
 
 ### Adhérence à CrowdSec
 
