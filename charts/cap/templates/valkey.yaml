@@ -1,0 +1,122 @@
+{{- if .Values.valkey.enabled }}
+{{- $v := .Values.valkey -}}
+{{/*
+Valkey : la mémoire de Cap. Défis en cours (TTL court), jetons résolus (TTL
+court), et — 🛑 SANS TTL — les clés de site et les sessions d'administration.
+C'est pour ces dernières qu'il y a un volume.
+*/}}
+{{- if and $v.persistence.enabled (not $v.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "cap.valkeyFullname" . }}-data
+  labels:
+    {{- include "cap.labels" . | nindent 4 }}
+  annotations:
+    # Le volume porte les CLÉS DE SITE : ne pas le laisser élaguer avec le
+    # release. Les recréer imposerait de remettre à jour le bouncer.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    {{- toYaml $v.persistence.accessModes | nindent 4 }}
+  {{- with $v.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $v.persistence.size }}
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cap.valkeyFullname" . }}
+  labels:
+    {{- include "cap.labels" . | nindent 4 }}
+    {{- include "cap.valkeySelectorLabels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "cap.valkeySelectorLabels" . | nindent 4 }}
+  ports:
+    - name: valkey
+      port: 6379
+      targetPort: valkey
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cap.valkeyFullname" . }}
+  labels:
+    {{- include "cap.labels" . | nindent 4 }}
+    {{- include "cap.valkeySelectorLabels" . | nindent 4 }}
+spec:
+  replicas: 1
+  {{- if $v.persistence.enabled }}
+  # Un seul volume RWO : le nouveau pod ne peut pas démarrer tant que l'ancien
+  # le tient. Recreate, donc, et pas de rolling update.
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "cap.valkeySelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cap.labels" . | nindent 8 }}
+        {{- include "cap.valkeySelectorLabels" . | nindent 8 }}
+    spec:
+      {{- with $v.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml $v.podSecurityContext | nindent 8 }}
+      {{- with $v.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $v.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $v.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: valkey
+          image: "{{ $v.image.repository }}:{{ $v.image.tag }}"
+          imagePullPolicy: {{ $v.image.pullPolicy }}
+          args:
+            - valkey-server
+            {{- range $v.args }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: valkey
+              containerPort: 6379
+          securityContext:
+            {{- toYaml $v.securityContext | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: ["valkey-cli", "ping"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["valkey-cli", "ping"]
+            periodSeconds: 15
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          {{- if $v.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $v.persistence.existingClaim | default (printf "%s-data" (include "cap.valkeyFullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+{{- end }}

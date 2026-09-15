@@ -1,0 +1,28 @@
+apiVersion: v2
+name: cap
+description: |
+  Cap (https://capjs.js.org) — serveur de captcha auto-hébergé à preuve de
+  travail, sans énigme visuelle, sans traceur, sans tiers. Serveur Bun +
+  Valkey. Prévu comme fournisseur `custom` du bouncer CrowdSec du chart
+  traefik-coraza.
+type: application
+
+# Plancher réel des API rendues : networking.k8s.io/v1 (1.19), apps/v1, v1,
+# seccompProfile et topologySpreadConstraints GA en 1.19. Rien n'exige mieux —
+# ne pas durcir sans raison mesurée.
+kubeVersion: ">=1.19.0-0"
+
+version: 0.1.0
+# Version de l'image Cap déployée par défaut (cf. cap.image.tag).
+appVersion: "3.1.10"
+
+keywords:
+  - captcha
+  - cap
+  - proof-of-work
+  - crowdsec
+  - traefik
+  - waf
+
+maintainers:
+  - name: AdmanTIC

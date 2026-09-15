@@ -1,0 +1,45 @@
+{{/*
+Gardes de rendu. Elles font ÉCHOUER `helm template` plutôt que de laisser
+partir un déploiement muet mais cassé — ou, pire, une IHM d'administration
+ouverte sur Internet.
+*/}}
+{{- $c := .Values.cap -}}
+{{- $a := $c.adminKey -}}
+
+{{- if and $a.value $a.existingSecret }}
+{{- fail "\n\ncap.adminKey.value ET cap.adminKey.existingSecret sont tous deux\nrenseignés : les deux sources sont EXCLUSIVES. N'en garder qu'une.\n" }}
+{{- end }}
+
+{{- if and (not $a.value) (not $a.existingSecret) }}
+{{- fail "\n\nAucun ADMIN_KEY fourni. C'est le mot de passe de l'IHM de gestion des clés\nde site, REQUIS par Cap — le processus refuse de démarrer sans lui.\n\nAu choix :\n  cap.adminKey.value: \"<32 octets hex, 12 caracteres minimum>\"\n  cap.adminKey.existingSecret: \"<Secret du namespace du release>\"\n\nAucune génération automatique : `lookup` ne fonctionne pas sous ArgoCD (rendu\nsans accès cluster), une clé engendrée au rendu changerait à chaque synchro.\n" }}
+{{- end }}
+
+{{- if and $a.value (lt (len $a.value) 12) }}
+{{- fail "\n\ncap.adminKey.value fait moins de 12 caractères : Cap REFUSE DE DÉMARRER.\nLe pod partirait en CrashLoopBackOff sans autre indice.\n" }}
+{{- end }}
+
+{{- if and (not .Values.valkey.enabled) (not .Values.valkey.externalUrl) }}
+{{- fail "\n\nvalkey.enabled est false et valkey.externalUrl est VIDE. Cap n'a alors\naucune mémoire : ni défis, ni jetons, ni CLÉS DE SITE.\nFournir valkey.externalUrl (ex: redis://valkey.data.svc.cluster.local:6379).\n" }}
+{{- end }}
+
+{{- if and .Values.valkey.enabled (not .Values.valkey.persistence.enabled) }}
+{{- fail "\n\nvalkey.persistence.enabled est false : les CLÉS DE SITE et les sessions\nd'administration vivent dans Valkey SANS TTL. Un redémarrage du pod les\nperdrait, et le bouncer ne validerait plus aucun captcha — tout visiteur en\nremédiation « captcha » serait alors bloqué, sans recours.\n\nSi c'est une instance jetable (banc d'essai), poser explicitement\nvalkey.persistence.existingClaim sur un volume, ou assumer la perte en\nretirant cette garde en connaissance de cause.\n" }}
+{{- end }}
+
+{{- if .Values.ingress.enabled }}
+{{- if not .Values.ingress.host }}
+{{- fail "\n\ningress.host est VIDE (requis quand ingress.enabled).\nC'est l'hôte PUBLIC de Cap, joint par le NAVIGATEUR du visiteur en\nremédiation — il doit résoudre vers l'entrée publique du cluster.\n" }}
+{{- end }}
+{{- $adm := .Values.ingress.admin }}
+{{- if not $adm.allowUnauthenticated }}
+{{- if not $adm.enabled }}
+{{- fail "\n\ningress.admin.enabled est false : les chemins /, /server, /auth et /swagger\nretombent sur l'Ingress PUBLIC. L'IHM de gestion des clés de site serait\nALORS ACCESSIBLE SANS AUTHENTIFICATION (seul ADMIN_KEY la protégerait).\n\nSoit activer l'Ingress d'administration avec ingress.admin.middlewares,\nsoit assumer explicitement : ingress.admin.allowUnauthenticated: true\n" }}
+{{- end }}
+{{- if not $adm.middlewares }}
+{{- fail "\n\ningress.admin.middlewares est VIDE : l'Ingress d'administration route l'IHM\nSANS AUCUNE AUTHENTIFICATION en amont. Seul ADMIN_KEY la protégerait.\n\nex: ingress.admin.middlewares: [\"sso-forwardauth-authelia@kubernetescrd\"]\n    (format <namespace>-<nom>@kubernetescrd)\n\nOu assumer explicitement : ingress.admin.allowUnauthenticated: true\n" }}
+{{- end }}
+{{- if not $adm.priority }}
+{{- fail "\n\ningress.admin.priority est vide ou nul. 🛑 SANS PRIORITÉ EXPLICITE, L'IHM\nEST PUBLIQUE : Traefik départage deux routeurs à la LONGUEUR de leur règle,\net « Host && PathPrefix(`/`) » (Ingress public) est PLUS LONGUE que\n« Host && Path(`/`) » (Ingress admin). La racine — donc la page de connexion\nde Cap — irait au routeur public.\n" }}
+{{- end }}
+{{- end }}
+{{- end }}

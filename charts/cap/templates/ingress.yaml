@@ -1,0 +1,93 @@
+{{- if .Values.ingress.enabled }}
+{{- $i := .Values.ingress -}}
+{{/*
+DEUX Ingress, UN hôte.
+
+  cap-public — tout le préfixe `/`. AUCUNE authentification : c'est le visiteur
+               en remédiation qu'on veut laisser prouver qu'il est humain, il
+               n'a pas de compte.
+  cap-admin  — `/` EXACT plus les préfixes d'administration, derrière
+               authentification, avec une PRIORITÉ DE ROUTEUR EXPLICITE.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "cap.fullname" . }}-public
+  labels:
+    {{- include "cap.labels" . | nindent 4 }}
+  {{- if or $i.public.annotations (and $i.tls.enabled $i.tls.annotations) }}
+  annotations:
+    {{- with $i.public.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if $i.tls.enabled }}
+    {{- with $i.tls.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- end }}
+  {{- end }}
+spec:
+  {{- with $i.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ $i.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "cap.fullname" . }}
+                port:
+                  name: http
+  {{- if $i.tls.enabled }}
+  tls:
+    - secretName: {{ $i.tls.secretName }}
+      hosts:
+        - {{ $i.host | quote }}
+  {{- end }}
+{{- if $i.admin.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "cap.fullname" . }}-admin
+  labels:
+    {{- include "cap.labels" . | nindent 4 }}
+  annotations:
+    {{- with $i.admin.middlewares }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ join "," . | quote }}
+    {{- end }}
+    # 🛑 SANS CETTE PRIORITÉ, L'IHM EST PUBLIQUE. Traefik départage deux
+    # routeurs à la LONGUEUR de leur règle, et « Host && PathPrefix(`/`) » est
+    # PLUS LONGUE que « Host && Path(`/`) » : l'Ingress public gagnerait la
+    # racine, donc la page de connexion de Cap. Les préfixes /server etc.
+    # gagneraient d'eux-mêmes, mais on ne laisse pas la racine au hasard d'un
+    # calcul de longueur.
+    traefik.ingress.kubernetes.io/router.priority: {{ int $i.admin.priority | quote }}
+    {{- with $i.admin.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- with $i.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ $i.host | quote }}
+      http:
+        paths:
+          {{- range $i.admin.paths }}
+          - path: {{ .path | quote }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "cap.fullname" $ }}
+                port:
+                  name: http
+          {{- end }}
+  # Pas de bloc `tls` ici : même hôte que l'Ingress public, donc même
+  # certificat et un seul Secret. Le redéclarer ferait deux demandes ACME
+  # concurrentes pour le même nom.
+{{- end }}
+{{- end }}

@@ -1,0 +1,234 @@
+# -----------------------------------------------------------------------------
+#  cap — serveur de captcha auto-hébergé
+# -----------------------------------------------------------------------------
+# Cap en mode « standalone » : un serveur Bun + un Valkey où il range défis,
+# jetons, clés de site et sessions d'administration.
+#
+#   navigateur ──GET  /assets/widget.js, /assets/cap_wasm_bg.wasm──▶ cap (public)
+#   navigateur ──POST /<siteKey>/challenge, /<siteKey>/redeem─────▶ cap (public)
+#   Traefik ─────POST /<siteKey>/siteverify ──────────────────────▶ cap (interne)
+#   admin ───────GET  /, /server/*, /auth/*, /swagger ────────────▶ cap (protégé)
+#
+# 🛑 LA CLÉ DE SITE N'EST PAS DÉCLARATIVE. Elle se crée dans l'IHM (ou par
+#    `POST /server/keys` avec une session) et donne un couple clé publique /
+#    clé secrète que Cap ne redonne JAMAIS. Perdre le Valkey, c'est perdre la
+#    clé : le bouncer ne validerait plus aucun captcha, donc tout visiteur en
+#    remédiation « captcha » serait bloqué. D'où le PVC, et pas un emptyDir.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# -----------------------------------------------------------------------------
+#  cap — le serveur lui-même. Sans état propre : tout est dans Valkey.
+# -----------------------------------------------------------------------------
+cap:
+  image:
+    repository: tiago2/cap
+    # 🛑 Épingler. Les routes, les variables d'environnement et l'utilisateur de
+    # l'image sont relus par version — `latest` ferait dériver le contrat.
+    tag: "3.1.10"
+    pullPolicy: IfNotPresent
+
+  # Cap est sans état : la paire survit à la perte d'un nœud.
+  replicas: 2
+
+  # 🛑 LE MOT DE PASSE DE L'IHM (variable ADMIN_KEY), 12 caractères au moins,
+  #    sinon le processus REFUSE DE DÉMARRER. Deuxième serrure derrière
+  #    l'authentification de l'Ingress d'administration.
+  #
+  #    Deux façons, exclusives — la garde refuse de rendre sans l'une des deux.
+  #    Aucune génération automatique : `lookup` ne fonctionne pas sous ArgoCD
+  #    (rendu sans accès cluster), une clé engendrée au rendu changerait à
+  #    CHAQUE synchronisation et invaliderait les sessions en cours.
+  adminKey:
+    # 1) valeur explicite → Secret posé par le chart.
+    #    ⚠️ secret en clair dans les values : à réserver aux values chiffrées
+    #    (SOPS, sealed-secrets, external-secrets…).
+    value: ""
+    # 2) Secret pré-existant DANS LE NAMESPACE DU RELEASE.
+    existingSecret: ""
+    existingSecretKey: adminKey
+
+  # Le widget et le WebAssembly servis par NOUS, depuis Valkey, après un
+  # téléchargement au démarrage.
+  #
+  # ⚠️ DÉPENDANCE DE DÉMARRAGE À jsdelivr : le serveur d'actifs télécharge le
+  #    widget et le WASM aux versions épinglées ci-dessous. Le visiteur, lui,
+  #    ne joint aucun CDN — sauf un cas : le widget garde un repli `pako` sur
+  #    jsdelivr pour les navigateurs sans DecompressionStream (< 2023).
+  assetsServer:
+    enabled: true
+    # ⚠️ Épinglés : `latest` ferait changer le code servi aux visiteurs à chaque
+    # redémarrage du pod.
+    widgetVersion: "0.1.57"
+    wasmVersion: "0.0.7"
+
+  # En-tête où Cap lit l'IP du visiteur pour limiter le débit des défis.
+  # 🛑 Ne PAS mettre X-Forwarded-For : un client peut le préremplir, et Traefik
+  #    y AJOUTE au lieu de remplacer. X-Real-IP est posé par Traefik.
+  ratelimitIpHeader: X-Real-IP
+
+  service:
+    type: ClusterIP
+    port: 3000
+
+  # Un pod par nœud, sinon les deux répliques peuvent tomber ensemble.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+  # L'utilisateur `bun` de l'image (`USER bun` dans le Dockerfile amont).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  priorityClassName: ""
+  extraEnv: []
+
+# -----------------------------------------------------------------------------
+#  valkey — la mémoire de Cap
+# -----------------------------------------------------------------------------
+# Défis en cours (TTL court), jetons résolus (TTL court), et — 🛑 SANS TTL — les
+# clés de site et les sessions d'administration. C'est pour ces dernières qu'il
+# y a un volume.
+valkey:
+  # À false, aucun objet Valkey n'est rendu : fournir alors `externalUrl`.
+  enabled: true
+
+  # Valkey/Redis externe, quand valkey.enabled vaut false.
+  # ex: redis://valkey.data.svc.cluster.local:6379
+  externalUrl: ""
+
+  image:
+    repository: valkey/valkey
+    tag: "9.0.6-alpine"
+    pullPolicy: IfNotPresent
+
+  # `--save 60 1` : un instantané au plus toutes les 60 s s'il y a eu une
+  # écriture. `noeviction` : plutôt refuser une écriture que jeter une clé de
+  # site quand la mémoire est pleine — `maxmemory` n'est pas posé, la limite du
+  # conteneur fait office de garde-fou.
+  args:
+    - --save
+    - "60 1"
+    - --loglevel
+    - warning
+    - --maxmemory-policy
+    - noeviction
+
+  persistence:
+    enabled: true
+    # Vide → StorageClass par défaut du cluster.
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 256Mi
+    # Réutiliser un PVC existant plutôt que d'en créer un.
+    existingClaim: ""
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+  # L'utilisateur `valkey` de l'image.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
+
+# -----------------------------------------------------------------------------
+#  ingress — DEUX Ingress, UN hôte
+# -----------------------------------------------------------------------------
+# Le partage des chemins est le point délicat de ce chart. Voir README.md.
+ingress:
+  enabled: true
+  className: traefik
+  # 🛑 SANS DÉFAUT, REQUIS quand ingress.enabled : l'hôte public de Cap.
+  # Il doit être joignable par le NAVIGATEUR du visiteur en remédiation.
+  host: ""
+
+  tls:
+    enabled: true
+    # Le Secret de certificat, porté par l'Ingress public. L'Ingress
+    # d'administration ne redéclare pas de TLS : même hôte, même certificat.
+    secretName: cap-tls
+    # Annotations posées sur l'Ingress PUBLIC (cert-manager, etc.).
+    # ex: cert-manager.io/cluster-issuer: letsencrypt-production
+    annotations: {}
+
+  # L'Ingress public : tout le préfixe `/`. AUCUNE authentification, c'est le
+  # visiteur banni qu'on veut laisser prouver qu'il est humain — il n'a pas de
+  # compte.
+  public:
+    annotations: {}
+
+  # L'Ingress d'administration : l'IHM de gestion des clés de site.
+  admin:
+    enabled: true
+
+    # 🛑 L'AUTHENTIFICATION. Middlewares Traefik posés en annotation
+    #    `router.middlewares`, au format `<namespace>-<nom>@kubernetescrd`.
+    #    ex: ["sso-forwardauth-authelia@kubernetescrd"]
+    middlewares: []
+
+    # 🛑 PRIORITÉ DE ROUTEUR EXPLICITE — SANS ELLE, L'IHM EST PUBLIQUE.
+    #    Traefik départage deux routeurs à la LONGUEUR de leur règle, et
+    #    « Host && PathPrefix(`/`) » est PLUS LONGUE que « Host && Path(`/`) » :
+    #    l'Ingress public gagnerait la racine, donc la page de connexion de Cap.
+    #    Les préfixes /server etc. gagneraient d'eux-mêmes, mais on ne laisse
+    #    pas la racine au hasard d'un calcul de longueur.
+    priority: 100
+
+    # Chemins réservés à l'IHM. `/` en Exact : `/<siteKey>/…` reste au routeur
+    # public.
+    paths:
+      - { path: /, pathType: Exact }      # la page de l'IHM (index.html)
+      - { path: /server, pathType: Prefix }  # API de gestion (clés, sessions)
+      - { path: /auth, pathType: Prefix }    # connexion par ADMIN_KEY
+      - { path: /swagger, pathType: Prefix } # documentation OpenAPI
+      - { path: /public, pathType: Prefix }  # actifs statiques de l'IHM
+
+    annotations: {}
+
+    # 🛑 Interrupteur de sûreté. La garde REFUSE DE RENDRE si l'IHM se
+    #    retrouve exposée sans authentification — admin.enabled à false, ou
+    #    middlewares vide. Le passer à true est un choix explicite et assumé.
+    allowUnauthenticated: false

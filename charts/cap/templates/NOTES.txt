@@ -1,0 +1,103 @@
+cap {{ .Chart.Version }} — serveur de captcha auto-hébergé (Cap {{ .Chart.AppVersion }})
+
+{{- if .Values.ingress.enabled }}
+Hôte public : https://{{ .Values.ingress.host }}
+{{- else }}
+⚠️ Aucun Ingress rendu (ingress.enabled: false) : le widget n'est joignable
+   que depuis le cluster. Un visiteur en remédiation ne pourra rien charger.
+{{- end }}
+Service interne : {{ include "cap.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ int .Values.cap.service.port }}
+Mémoire : {{ include "cap.redisUrl" . }}{{ if not .Values.valkey.enabled }}  (externe){{ end }}
+
+🛑 ÉTAPE MANUELLE OBLIGATOIRE — LA CLÉ DE SITE N'EST PAS DÉCLARATIVE.
+
+   Rien ne fonctionne tant qu'elle n'est pas créée. Cap donne un couple clé
+   publique / clé secrète qu'il NE REDONNE JAMAIS : la noter au moment de la
+   création.
+
+{{- if .Values.ingress.enabled }}
+   1. Ouvrir https://{{ .Values.ingress.host }}/ et s'authentifier avec la
+      valeur de ADMIN_KEY (Secret « {{ include "cap.adminSecretName" . }} », clé
+      « {{ include "cap.adminSecretKey" . }} »).
+{{- else }}
+   1. Ouvrir l'IHM (port-forward sur le Service) et s'authentifier avec la
+      valeur de ADMIN_KEY (Secret « {{ include "cap.adminSecretName" . }} »).
+{{- end }}
+   2. Créer une clé de site. Conserver siteKey ET secretKey.
+   3. Les reporter chez le consommateur du captcha. Avec le chart
+      traefik-coraza, bloc `bouncer:` de ses values :
+
+        bouncer:
+          captcha:
+            enabled: true
+            provider: custom
+            keys:
+              siteKey: "<cle publique>"
+              secretKey: "<cle secrete>"
+{{- if .Values.ingress.enabled }}
+            jsURL: https://{{ .Values.ingress.host }}/assets/widget.js
+            validateURL: http://{{ include "cap.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ int .Values.cap.service.port }}/<siteKey>/siteverify
+            widget:
+              apiBaseURL: https://{{ .Values.ingress.host }}
+              wasmURL: https://{{ .Values.ingress.host }}/assets/cap_wasm_bg.wasm
+          attach:
+            enabled: true
+            middleware: captcha
+            # 🛑 SANS CETTE LIGNE, UN VISITEUR EN REMÉDIATION NE PEUT PAS
+            #    CHARGER LE WIDGET : son hôte passerait lui-même par le bouncer.
+            bypassHosts: ["{{ .Values.ingress.host }}"]
+{{- end }}
+
+{{- if .Values.ingress.enabled }}
+{{- if and .Values.ingress.admin.enabled (not .Values.ingress.admin.middlewares) }}
+
+!! L'IHM D'ADMINISTRATION N'A AUCUNE AUTHENTIFICATION EN AMONT
+   (ingress.admin.middlewares vide, allowUnauthenticated assumé). Seul
+   ADMIN_KEY protège la création et la révocation des clés de site.
+{{- end }}
+{{- if not .Values.ingress.admin.enabled }}
+
+!! PAS D'INGRESS D'ADMINISTRATION : /, /server, /auth et /swagger retombent sur
+   l'Ingress public. L'IHM est exposée, seul ADMIN_KEY la protège.
+{{- end }}
+{{- end }}
+{{- if not .Values.valkey.enabled }}
+
+!! VALKEY EXTERNE ({{ .Values.valkey.externalUrl }}) — vérifier qu'il est
+   PERSISTANT et en `maxmemory-policy noeviction`. Les clés de site y vivent
+   SANS TTL : une éviction ou une perte de données rendrait tout captcha
+   invalide, donc tout visiteur en remédiation bloqué.
+{{- end }}
+{{- if .Values.cap.adminKey.value }}
+
+!! ADMIN_KEY vient des values EN CLAIR. Chiffrer ces values (SOPS,
+   sealed-secrets, external-secrets) ou basculer sur
+   cap.adminKey.existingSecret.
+{{- end }}
+{{- if .Values.cap.assetsServer.enabled }}
+
+⚠️ Dépendance de démarrage à jsdelivr : le serveur d'actifs y télécharge le
+   widget ({{ .Values.cap.assetsServer.widgetVersion }}) et le WebAssembly
+   ({{ .Values.cap.assetsServer.wasmVersion }}) avant de les servir lui-même
+   depuis Valkey. Sans accès sortant, le pod démarre mais ne sert pas d'actifs.
+   Le visiteur, lui, ne joint aucun CDN — sauf un repli `pako` du widget sur
+   jsdelivr pour les navigateurs sans DecompressionStream (antérieurs à 2023).
+{{- end }}
+
+Vérifications :
+
+1. Cap répond et Valkey est joint :
+     kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "cap.fullname" . }}
+{{- if .Values.valkey.enabled }}
+     kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "cap.valkeyFullname" . }} -- valkey-cli ping
+{{- end }}
+
+2. Les actifs sont servis par NOUS, pas par un CDN :
+     curl -sI https://{{ .Values.ingress.host }}/assets/widget.js | head -1
+
+3. Le partage des chemins tient — la racine doit demander à s'authentifier,
+   et un chemin de clé de site rester public :
+     curl -sI https://{{ .Values.ingress.host }}/ | head -1
+     curl -sI https://{{ .Values.ingress.host }}/server/keys | head -1
+   Un 200 sur la racine sans authentification = la priorité de routeur n'a pas
+   pris, l'IHM est publique.

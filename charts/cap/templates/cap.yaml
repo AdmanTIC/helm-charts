@@ -1,0 +1,123 @@
+{{- $c := .Values.cap -}}
+{{/* Le serveur Cap. Sans état propre : tout est dans Valkey. */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cap.fullname" . }}
+  labels:
+    {{- include "cap.labels" . | nindent 4 }}
+    {{- include "cap.selectorLabels" . | nindent 4 }}
+spec:
+  type: {{ $c.service.type }}
+  selector:
+    {{- include "cap.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ int $c.service.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cap.fullname" . }}
+  labels:
+    {{- include "cap.labels" . | nindent 4 }}
+    {{- include "cap.selectorLabels" . | nindent 4 }}
+spec:
+  replicas: {{ int $c.replicas }}
+  selector:
+    matchLabels:
+      {{- include "cap.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cap.labels" . | nindent 8 }}
+        {{- include "cap.selectorLabels" . | nindent 8 }}
+      {{- with $c.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with $c.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with $c.topologySpreadConstraints }}
+      # Un pod par nœud, sinon les répliques peuvent tomber ensemble.
+      topologySpreadConstraints:
+        {{- range . }}
+        - {{ toYaml . | nindent 10 | trim }}
+          labelSelector:
+            matchLabels:
+              {{- include "cap.selectorLabels" $ | nindent 14 }}
+        {{- end }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml $c.podSecurityContext | nindent 8 }}
+      {{- with $c.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: cap
+          image: "{{ $c.image.repository }}:{{ $c.image.tag }}"
+          imagePullPolicy: {{ $c.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            # 🛑 12 caractères au moins, sinon le processus refuse de démarrer.
+            - name: ADMIN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cap.adminSecretName" . }}
+                  key: {{ include "cap.adminSecretKey" . }}
+            - name: REDIS_URL
+              value: {{ include "cap.redisUrl" . | quote }}
+            {{- if $c.assetsServer.enabled }}
+            # Widget et WebAssembly servis par NOUS, depuis Valkey, après un
+            # téléchargement au démarrage (jsdelivr). Voir README.md.
+            - name: ENABLE_ASSETS_SERVER
+              value: "true"
+            # ⚠️ Épinglés : `latest` ferait changer le code servi aux visiteurs
+            # à chaque redémarrage du pod.
+            - name: WIDGET_VERSION
+              value: {{ $c.assetsServer.widgetVersion | quote }}
+            - name: WASM_VERSION
+              value: {{ $c.assetsServer.wasmVersion | quote }}
+            {{- end }}
+            # L'IP du visiteur pour la limitation de débit des défis.
+            # 🛑 Pas X-Forwarded-For : un client peut le préremplir, et Traefik
+            #    y AJOUTE au lieu de remplacer.
+            - name: RATELIMIT_IP_HEADER
+              value: {{ $c.ratelimitIpHeader | quote }}
+            {{- with $c.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            {{- toYaml $c.securityContext | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 30
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            # Le seul répertoire où l'image écrit (base IP optionnelle).
+            # Jetable : rien d'utile n'y survit au pod.
+            - name: data
+              mountPath: /usr/src/app/data
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 64Mi
