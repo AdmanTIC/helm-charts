@@ -50,8 +50,9 @@ spec:
 
     # ── Custom rules ─────────────────────────────────────────────────────────
     # Use networkPolicy.extraIngress to allow external sources:
-    #   • bouncer (other namespace) → LAPI (port 8080)
     #   • custom scraper / metrics → any pod
+    # NB : bouncer (autre namespace) → LAPI est couvert par la NP dédiée
+    # networkPolicy.lapi (rendue plus bas), pas besoin d'extraIngress.
     {{- with .Values.networkPolicy.extraIngress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -118,5 +119,45 @@ spec:
   # limitée au challenge).
   ingress:
     - {}
+{{- end }}
+---
+# NetworkPolicy dédiée à l'ingress LAPI (port 8080) depuis d'autres namespaces.
+# Cas nominal : un bouncer tournant hors du namespace du chart (plugin Traefik,
+# ingress-nginx, HAProxy, …) doit pouvoir interroger LAPI. La NP principale
+# (podSelector: {}) ne laisse passer que l'intra-namespace, donc sans cette
+# exception il faut écrire un extraIngress à la main.
+# Ne cible QUE les pods LAPI (labels posés par le sub-chart crowdsec) et
+# n'ouvre QUE le port 8080/TCP. Risque résiduel faible : LAPI exige une clé
+# API de bouncer ou un login machine.
+{{- if or .Values.networkPolicy.lapi.allowFromAll .Values.networkPolicy.lapi.from }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "crowdsec-all-in-one.fullname" . }}-lapi-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crowdsec-all-in-one.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      k8s-app: {{ .Release.Name }}
+      type: lapi
+  policyTypes:
+    - Ingress
+  ingress:
+    {{- if .Values.networkPolicy.lapi.allowFromAll }}
+    # Mode large : toute source (tous namespaces, voire hors cluster selon le
+    # CNI), mais uniquement sur le port LAPI.
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.lapi.port }}
+    {{- else }}
+    # Mode ciblé : uniquement les sources listées dans networkPolicy.lapi.from.
+    - from:
+        {{- toYaml .Values.networkPolicy.lapi.from | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.lapi.port }}
+    {{- end }}
 {{- end }}
 {{- end }}

@@ -1239,6 +1239,28 @@ networkPolicy:
   # solver et le challenge ACME timeoute côté Let's Encrypt / autre CA.
   allowCertManagerHttp01Solver: true
 
+  # ---------------------------------------------------------------------------
+  # Ingress LAPI depuis d'autres namespaces
+  # ---------------------------------------------------------------------------
+  # Génère une NetworkPolicy dédiée ciblant uniquement les pods LAPI et ouvrant
+  # leur port (8080/TCP) aux sources listées. Cas nominal : un bouncer tournant
+  # hors du namespace du chart (plugin Traefik, ingress-nginx, HAProxy, …).
+  # Risque résiduel faible : LAPI exige une clé API de bouncer ou un login
+  # machine.
+  lapi:
+    # Port du service LAPI (aligné sur crowdsec.lapi du sub-chart).
+    port: 8080
+    # true = ouvre le port LAPI à toute source (tous namespaces), sans tenir
+    # compte de `from`. Équivalent du choix fait pour allowWebuiIngress.
+    allowFromAll: false
+    # Sources autorisées (format standard `from` d'une règle ingress
+    # NetworkPolicy). Vider la liste (from: []) pour désactiver complètement
+    # la NP dédiée (retour au comportement intra-namespace strict).
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: ingress-controller
+
   # Additional ingress rules appended to the intra-namespace allow.
   # Standard NetworkPolicy ingress rule format — each entry is a rule object.
   extraIngress: []
