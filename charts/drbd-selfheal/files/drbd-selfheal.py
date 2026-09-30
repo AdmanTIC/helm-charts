@@ -38,8 +38,12 @@ L'invariant qui rend les 4 minutes aveugles entre deux jobs inoffensives : on co
 valeur ABSOLUE de `received`, pas un débit. Identique à deux exécutions d'écart, elle prouve
 que rien n'a circulé dans l'intervalle ET qu'aucune reconnexion n'a eu lieu — une
 reconnexion remettrait ce compteur à zéro. Pour le bitmap périmé, où `received` avance
-légitimement (réplication normale), l'invariant est `out-of-sync`, constant entre deux pairs
-UpToDate connectés puisque les écritures y sont acquittées de façon synchrone.
+légitimement (réplication normale), l'invariant est `out-of-sync`, qui ne peut jamais CROÎTRE
+entre deux pairs UpToDate connectés puisque les écritures y sont acquittées de façon
+synchrone. Il reste constant sur un volume au repos, et DÉCROÎT sur un volume écrit : chaque
+écriture qui atteint les deux pairs efface ses bits. Constaté le 2026-09-30 sur deux
+PostgreSQL dont le bitmap couvrait le disque entier (5 et 49 Go) : exiger une valeur
+constante les rendait invisibles, à jamais.
 
 MODE OBSERVATION. `DRY_RUN=true` (défaut) : le balayeur détecte, journalise, publie ses
 métriques et n'exécute AUCUN `drbdadm`. On l'arme après avoir vu ses décisions sur des cas
@@ -532,17 +536,35 @@ def classify(readings):
 
     # Défaut 2 : deux pairs UpToDate, aucune resynchronisation, bitmap non vide. Ici
     # `received` avance légitimement (réplication normale) ; l'invariant est `out-of-sync`,
-    # constant entre deux pairs connectés dont les écritures sont acquittées.
+    # qui ne CROÎT jamais entre deux pairs connectés dont les écritures sont acquittées :
+    # constant au repos, décroissant sous les écritures applicatives, qui effacent leurs
+    # bits sur les deux pairs. Une hausse, elle, écarte la paire. L'empreinte ne porte donc
+    # plus la valeur : la continuité entre exécutions est vérifiée par `continuity()`.
     if (
         first["disk"] == "UpToDate"
         and first["peer_disk"] == "UpToDate"
         and every(lambda r: r["repl"] == "Established")
         and every(lambda r: not r["peer_client"])
-        and same("out_of_sync")
+        and all(a["out_of_sync"] >= b["out_of_sync"] for a, b in zip(readings, readings[1:]))
     ):
-        return "stale_bitmap", f"stale|{first['out_of_sync']}"
+        return "stale_bitmap", "stale"
 
     return None, None
+
+
+def continuity(history, defect, fingerprint, readings):
+    """Vrai si ce verdict prolonge la série de l'exécution précédente.
+
+    Défaut 2 : en plus de l'empreinte, `out-of-sync` ne doit pas avoir CRÛ depuis le dernier
+    relevé de l'exécution précédente. Une série héritée d'une version antérieure, sans valeur
+    enregistrée, repart de zéro.
+    """
+    if history.get("fingerprint") != fingerprint or history.get("defect") != defect:
+        return False
+    if defect == "stale_bitmap":
+        last = history.get("out_of_sync")
+        return last is not None and readings[0]["out_of_sync"] <= last
+    return True
 
 
 # --- Garde-fous ------------------------------------------------------------
@@ -1117,7 +1139,7 @@ def main():
             continue
 
         history = state["pairs"].get(marker) or {}
-        if history.get("fingerprint") == fingerprint and history.get("defect") == defect:
+        if continuity(history, defect, fingerprint, readings):
             streak = history.get("streak", 1) + 1
             first_seen = history.get("first_seen", samples[0]["at"])
         else:
@@ -1129,6 +1151,7 @@ def main():
             "fingerprint": fingerprint,
             "streak": streak,
             "first_seen": first_seen,
+            "out_of_sync": readings[-1]["out_of_sync"],
         }
 
         if defect == "stalled_resync":

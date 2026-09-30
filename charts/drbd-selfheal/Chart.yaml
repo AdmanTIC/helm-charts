@@ -7,4 +7,4 @@ description: >-
   MODE OBSERVATION — il détecte, journalise et alerte sans agir tant que
   `controller.dryRun` vaut true.
 type: application
-version: 0.2.0
+version: 0.2.1

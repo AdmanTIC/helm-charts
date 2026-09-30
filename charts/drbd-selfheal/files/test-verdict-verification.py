@@ -182,6 +182,66 @@ def tester_orphelines():
     return reussis, len(cas) + 1
 
 
+def releve(oos_kio, **autres):
+    """Une paire storage2 -> storage3 telle que `collect()` la rend, bitmap en Kio."""
+    r = {
+        "disk": "UpToDate", "peer_disk": "UpToDate", "repl": "Established",
+        "conn": "Connected", "client": False, "peer_client": False, "verify": False,
+        "resync_suspended": "no", "rs_in_flight": 0, "congested": False, "received": 0,
+        "out_of_sync": oos_kio * 1024,
+    }
+    r.update(autres)
+    return r
+
+
+def tester_classification():
+    """Défaut 2 : `out-of-sync` constant OU décroissant est un bitmap périmé ; en hausse, non.
+
+    Les valeurs décroissantes sont RELEVÉES le 2026-09-30 sur le PostgreSQL authentik
+    (pvc-a8750bb1, storage2 -> storage3, relevés à 20 s) : bitmap couvrant le disque entier,
+    érodé par les écritures applicatives. L'ancienne exigence d'une valeur constante rendait
+    cette paire invisible.
+    """
+    decroissant = [releve(v) for v in (47572328, 47554832, 47536840)]
+    cas = [
+        ("bitmap constant : périmé", [releve(40)] * 3, ("stale_bitmap", "stale")),
+        ("bitmap érodé par les écritures : périmé", decroissant, ("stale_bitmap", "stale")),
+        ("bitmap en hausse : écarté", [releve(10), releve(20), releve(30)], (None, None)),
+        ("verification en ligne en cours : écarté", [releve(40, verify=True)] * 3, (None, None)),
+        ("resync en vol : écarté", [releve(40, rs_in_flight=8)] * 3, (None, None)),
+    ]
+    reussis = 0
+    for intitule, releves, attendu in cas:
+        obtenu = balayeur.classify(releves)
+        if obtenu == attendu:
+            print(f"  OK   {intitule}")
+            reussis += 1
+        else:
+            print(f"  ECHEC {intitule}\n        attendu {attendu}, obtenu {obtenu}")
+
+    # Continuité entre exécutions : l'historique porte le dernier `out-of-sync` vu.
+    hist = {"defect": "stale_bitmap", "fingerprint": "stale", "out_of_sync": 47554832 * 1024}
+    suites = [
+        ("série prolongée si le bitmap a baissé depuis", hist, decroissant[2:], True),
+        ("série prolongée si le bitmap n'a pas bougé", hist, decroissant[1:], True),
+        ("série rompue si le bitmap a crû depuis", hist, decroissant[:1], False),
+        (
+            "série héritée sans valeur enregistrée : rompue",
+            {"defect": "stale_bitmap", "fingerprint": "stale|40960"},
+            [releve(40)],
+            False,
+        ),
+    ]
+    for intitule, historique, releves, attendu in suites:
+        obtenu = balayeur.continuity(historique, "stale_bitmap", "stale", releves)
+        if obtenu == attendu:
+            print(f"  OK   {intitule}")
+            reussis += 1
+        else:
+            print(f"  ECHEC {intitule}\n        attendu {attendu}, obtenu {obtenu}")
+    return reussis, len(cas) + len(suites)
+
+
 def principal():
     reussis = 0
     for intitule, journal, pair, depuis, attendu in CAS:
@@ -226,7 +286,11 @@ def principal():
     gagnes, sur = tester_orphelines()
     reussis += gagnes
 
-    total = len(CAS) + 3 + sur
+    print("")
+    gagnes, sur_classif = tester_classification()
+    reussis += gagnes
+
+    total = len(CAS) + 3 + sur + sur_classif
     print(f"\n{reussis}/{total} scénarios conformes")
     return 0 if reussis == total else 1
 

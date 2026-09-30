@@ -4,9 +4,11 @@ puis compare son verdict à celui de l'exécution précédente, conservé dans l
 d'état. La preuve de stagnation se construit SUR PLUSIEURS EXÉCUTIONS.
 
 L'invariant qui rend les 4 minutes aveugles entre deux jobs inoffensives : on compare la
-valeur ABSOLUE de `received` (défaut 1) ou d'`out-of-sync` (défaut 2), pas un débit. Identique
-à deux exécutions d'écart, elle prouve qu'aucune reconnexion n'a eu lieu dans l'intervalle —
-une reconnexion remettrait ces compteurs à zéro ou purgerait le bitmap.
+valeur ABSOLUE de `received` (défaut 1), pas un débit : identique à deux exécutions d'écart,
+elle prouve qu'aucune reconnexion n'a eu lieu dans l'intervalle — une reconnexion remettrait
+ce compteur à zéro. Défaut 2 : `out-of-sync` ne doit jamais CROÎTRE, d'un relevé à l'autre ni
+d'une exécution à l'autre ; il baisse légitimement sous les écritures applicatives, et une
+reconnexion purgerait le bitmap.
 */}}
 apiVersion: batch/v1
 kind: CronJob

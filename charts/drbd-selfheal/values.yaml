@@ -143,9 +143,11 @@ controller:
 
     # DÉFAUT 2 — bitmap périmé entre deux pairs UpToDate. Quatre exécutions couvrent
     # 0 → 960 s, soit 16 min. Ici `received` avance légitimement (réplication normale) :
-    # l'invariant est `out-of-sync`, constant entre deux pairs connectés dont les écritures
-    # sont acquittées de façon synchrone. Une reconnexion survenue dans l'intervalle aurait
-    # purgé le bitmap, donc cassé la série d'elle-même.
+    # l'invariant est `out-of-sync`, qui ne CROÎT jamais entre deux pairs connectés dont les
+    # écritures sont acquittées de façon synchrone : constant au repos, décroissant sous les
+    # écritures applicatives (elles effacent leurs bits sur les deux pairs). Une hausse rompt
+    # la série. Une reconnexion survenue dans l'intervalle aurait purgé le bitmap, donc cassé
+    # la série d'elle-même.
     staleBitmapMinStreak: 4
     staleBitmapMinProvenSeconds: 900
 
