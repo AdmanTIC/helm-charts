@@ -46,6 +46,8 @@ Appel : include "bouncer.renderPage" (list $ "ban.html" $overrideHtml)
 {{- $bn := $root.Values.bouncer -}}
 {{- $b := $bn.branding -}}
 {{- $html := $override | default ($root.Files.Get (printf "files/bouncer/%s" $file)) -}}
+{{/* Les commentaires HTML documentent le mécanisme de rendu : jamais servis au client. */}}
+{{- $html = regexReplaceAll "(?s)<!--.*?-->\n?" $html "" -}}
 {{- $logoBlock := "" -}}
 {{- if $b.logo -}}
 {{- $logoBlock = printf "<div class=\"logo\"><img src=\"%s\" alt=\"%s\"></div>" $b.logo ($b.siteName | default "logo") -}}
