@@ -455,6 +455,16 @@ bouncer:
   # de la panne, on ne coupe pas le public.
   updateMaxFailure: "0"
 
+  # Période (secondes) du rafraîchissement de la copie locale des décisions en
+  # mode `stream`. Défaut plugin : 60 s — c'est le délai de prise en compte
+  # d'une nouvelle décision, PAR POD (les timers des pods ne sont pas
+  # synchronisés : en DaemonSet, l'effet paraît aléatoire jusqu'à une période
+  # pleine). 10 s ramène ce délai à quelque chose d'actionnable en incident,
+  # pour un coût négligeable : l'appel est un différentiel vers la LAPI locale
+  # au cluster, pas un dump complet. Posé en prod pdfl le 2026-10-14 (d'abord
+  # en kubectl patch, pérennisé ici).
+  updateIntervalSeconds: "10"
+
   # Verbosité du plugin dans les journaux Traefik. DEBUG dit pourquoi une IP
   # est jugée comme elle l'est — utile les premiers jours, bavard ensuite.
   logLevel: INFO

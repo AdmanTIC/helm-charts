@@ -110,6 +110,7 @@ Prend (list $root <fichier de clé LAPI>).
 enabled: "true"
 crowdsecMode: {{ $bn.crowdsecMode | quote }}
 updateMaxFailure: {{ $bn.updateMaxFailure | quote }}
+updateIntervalSeconds: {{ $bn.updateIntervalSeconds | quote }}
 crowdsecLapiScheme: {{ $bn.crowdsec.lapiScheme | quote }}
 crowdsecLapiHost: {{ $bn.crowdsec.lapiHost | quote }}
 crowdsecLapiKeyFile: {{ printf "%s/%s" $bn.secrets.mountPath $keyFile | quote }}

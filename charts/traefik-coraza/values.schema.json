@@ -26,6 +26,7 @@
         "hashSuffix": { "type": "boolean" },
         "crowdsecMode": { "enum": ["stream", "live", "alone", "appsec"] },
         "updateMaxFailure": { "type": ["string", "integer"] },
+        "updateIntervalSeconds": { "type": ["string", "integer"] },
         "logLevel": { "enum": ["DEBUG", "INFO", "ERROR"] },
         "ban": {
           "type": "object",
