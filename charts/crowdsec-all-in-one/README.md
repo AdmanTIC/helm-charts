@@ -132,6 +132,33 @@ crowdsec:
       ...
 ```
 
+### 2 bis. Identifiants LAPI de l'agent persistés (`agentPersistentCredentials`)
+
+L'agent upstream s'enregistre auprès de la LAPI dans un initContainer, sous le nom du pod, à
+chaque création de sandbox. Après un reboot du nœud le pod garde son nom, l'init rejoue
+`cscli lapi register`, la LAPI répond `user already exist` et l'agent reste en `Init`. Chaque
+pod laisse par ailleurs une machine orpheline dans la LAPI.
+
+```yaml
+crowdsec:
+  agent:
+    enabled: false                 # le DaemonSet upstream est remplacé…
+    persistentVolume:
+      config: { enabled: true }    # …par une copie qui réutilise les identifiants du PVC
+    acquisition: [...]             # le reste de crowdsec.agent.* est lu tel quel
+agentPersistentCredentials:
+  enabled: true
+  machineName: ""                  # défaut : <release>-agent
+```
+
+La copie (`templates/agent/`) ne diffère d'upstream que par l'init : si
+`local_api_credentials.yaml` est déjà dans le PVC, il est réutilisé, sinon une seule machine
+au nom stable est enregistrée. À re-synchroniser avec upstream à chaque montée du sous-chart.
+Incompatible avec `tls.agent.tlsClientAuth` (qui n'a pas ce problème).
+
+Reprise : machine supprimée de la LAPI (agent en 401) → supprimer `local_api_credentials.yaml`
+du PVC et relancer le pod ; PVC perdu alors que la machine existe → `cscli machines delete`.
+
 ### 3. WebUI — exposition
 
 Trois modes d'exposition supportés, mutuellement exclusifs :

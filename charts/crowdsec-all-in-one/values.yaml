@@ -28,6 +28,8 @@
 #   • register-job.yaml                 → Hook PostSync : crée la machine WebUI en BDD
 #   • agent-data-pvc.yaml               → PVC pour /var/lib/crowdsec/data
 #   • network-policy.yaml               → NetworkPolicy unique pour le namespace
+#   • agent/                            → agent DaemonSet (+ ConfigMaps, PVC) copié d'upstream, avec
+#                                         identifiants LAPI persistés dans le PVC (agentPersistentCredentials)
 #
 # Trois PVCs sont créées au déploiement :
 #   1. {release}-lapi-config-pvc        → config.yaml du LAPI                (RWX, 1Gi)
@@ -727,6 +729,29 @@ agentDataPvc:
 # Idempotent : cscli ne réinstalle pas un item déjà présent.
 #
 # Liste de référence des collections : https://app.crowdsec.net/hub/collections
+# =============================================================================
+#  Identifiants LAPI de l'agent persistés dans le PVC (agentPersistentCredentials)
+# =============================================================================
+# L'agent upstream s'enregistre auprès de la LAPI dans un initContainer, sous le nom du pod,
+# à CHAQUE création de sandbox : après un reboot du nœud, le pod (même nom) ré-exécute l'init,
+# la LAPI répond « user already exist » et l'agent reste bloqué en Init. Chaque pod laissait
+# en plus une machine orpheline dans la LAPI, alors que l'agent tournait en réalité avec les
+# identifiants du tout premier enregistrement (conservés par `mv -n` dans le PVC de config).
+#
+# Activer ce bloc remplace le DaemonSet upstream par une copie (templates/agent/) dont l'init
+# réutilise local_api_credentials.yaml s'il est déjà dans le PVC et n'enregistre qu'une seule
+# machine, au nom stable. Exige : crowdsec.agent.enabled=false et
+# crowdsec.agent.persistentVolume.config.enabled=true. Non compatible avec tls.agent.tlsClientAuth
+# (qui n'a pas ce problème). Les values de l'agent restent celles de crowdsec.agent.*.
+#
+# Reprise si la machine a été supprimée de la LAPI (agent en 401) : supprimer
+# local_api_credentials.yaml du PVC puis relancer le pod (ré-enregistrement). Si le PVC a été
+# perdu alors que la machine existe encore : `cscli machines delete <machineName>` sur la LAPI.
+agentPersistentCredentials:
+  enabled: false
+  # Nom de la machine dans la LAPI. Défaut : <release>-agent.
+  machineName: ""
+
 collectionsJob:
   enabled: true
   # image : hérite de crowdsec.image (repository / tag / pullPolicy du sub-chart).

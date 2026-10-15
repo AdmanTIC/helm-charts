@@ -1,0 +1,103 @@
+{{- if .Values.agentPersistentCredentials.enabled }}
+{{- include "crowdsec-all-in-one.agent.context" . }}
+{{- with (dict "Values" .Values.crowdsec "Release" .Release "Chart" .Chart) }}
+# Copies de upstream charts/crowdsec/templates/acquis-configmap.yaml et agent-configmap.yaml
+# (gardes agent.enabled retirées : upstream ne les rend plus quand son agent est désactivé).
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: acquis-configmap
+data:
+  acquis.yaml: |-
+    {{- $container_runtime := .Values.container_runtime }}
+    {{- range .Values.agent.acquisition }}
+    ---
+    filenames:
+      - /var/log/containers/{{ .podName }}_{{ .namespace }}_*.log
+    force_inotify: true
+    poll_without_inotify: {{ .poll_without_inotify | default "false"}}
+    labels:
+      type: {{ $container_runtime }}
+      program: {{ .program }}
+    {{- end }}
+    {{- range .Values.agent.additionalAcquisition }}
+    ---
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if and (not .Values.agent.acquisition) (not .Values.agent.additionalAcquisition) }}
+    {{ fail "No acquisition or additionalAcquisition configured" }}
+    {{- end }}
+
+---
+
+{{- if index .Values.config "simulation.yaml" -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: crowdsec-simulation
+data:
+  simulation.yaml: |
+{{ printf "%+v" (index .Values.config "simulation.yaml") | indent 4 }}
+{{ end }}
+---
+{{ if (include "parsersIsNotEmpty" .) }}
+{{- range $stage, $stageConfig := .Values.config.parsers -}}
+{{- if $stageConfig -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "crowdsec-parsers-%s" $stage }}
+data:
+{{ range $fileName, $content := $stageConfig -}}
+  {{ printf "%s: |" $fileName | indent 2 }}
+{{ $content | indent 4 }}
+{{ end }}
+---
+{{- end }}
+{{ end }}
+{{ end -}}
+
+{{- if .Values.config.scenarios }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "crowdsec-scenarios"
+data:
+{{ range $fileName, $content := .Values.config.scenarios -}}
+  {{ printf "%s: |" $fileName | indent 2 }}
+{{ $content | indent 4 }}
+{{ end }}
+{{- end }}
+
+---
+{{ if (include "postoverflowsIsNotEmpty" .) }}
+{{- range $stage, $stageConfig := .Values.config.postoverflows -}}
+{{- if $stageConfig -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "crowdsec-postoverflows-%s" $stage }}
+data:
+{{ range $fileName, $content := $stageConfig -}}
+  {{ printf "%s: |" $fileName | indent 2 }}
+{{ $content | indent 4 }}
+{{ end }}
+---
+{{- end }}
+{{ end }}
+{{ end -}}
+
+---
+{{- if index .Values.config "agent_config.yaml.local" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: crowdsec-agent-config-local
+data:
+  config.yaml.local: |
+{{ printf "%+v" (index .Values.config "agent_config.yaml.local") | indent 4 }}
+{{- end }}
+
+{{- end }}
+{{- end }}

@@ -1,0 +1,34 @@
+{{- if .Values.agentPersistentCredentials.enabled }}
+{{- include "crowdsec-all-in-one.agent.context" . }}
+{{- with (dict "Values" .Values.crowdsec "Release" .Release "Chart" .Chart) }}
+# Copie de upstream charts/crowdsec/templates/agent-persistentVolume.yaml (garde agent.enabled retirée).
+{{- if and (.Values.agent.persistentVolume.config.enabled) (not .Values.agent.persistentVolume.config.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-agent-config-pvc
+  {{- if .Values.agent.persistentVolume.config.annotations }}
+  annotations:
+{{ toYaml .Values.agent.persistentVolume.config.annotations | indent 4 }}
+  {{- end }}
+  labels:
+    k8s-app: {{ .Release.Name }}
+    type: agent
+    version: v1
+spec:
+  accessModes:
+{{ toYaml .Values.agent.persistentVolume.config.accessModes | indent 4 }}
+{{- if .Values.agent.persistentVolume.config.storageClassName }}
+{{- if (eq "-" .Values.agent.persistentVolume.config.storageClassName) }}
+  storageClassName: ""
+{{- else }}
+  storageClassName: "{{ .Values.agent.persistentVolume.config.storageClassName }}"
+{{- end }}
+{{- end }}
+  resources:
+    requests:
+      storage: "{{ .Values.agent.persistentVolume.config.size }}"
+{{ end }}
+
+{{- end }}
+{{- end }}
