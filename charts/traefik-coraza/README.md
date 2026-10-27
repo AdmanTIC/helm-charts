@@ -984,8 +984,11 @@ ré-annonçant jamais). D'où la sonde, le seul test qui vaille, le tour complet
    l'edge fautif — c'est cet état que la supervision remonte.
 
 Elle n'est rendue que si un bouncer est activé (sans bouncer, rien à prouver)
-et reste **désactivée par défaut** : elle a besoin de deux ancres que le chart
-ne peut pas deviner, vérifiées par la garde et le schéma.
+et reste **désactivée par défaut**, à dessein : elle a besoin de deux ancres
+que le chart ne peut pas deviner (le nœud d'où elle émet, et l'IP source que
+Traefik verra pour ce nœud) ainsi que de la liste des edges. Un défaut à
+`true` ferait refuser le rendu de tout bouncer activé sans ces values. Les
+trois sont exigées par le schéma et la garde dès que `sonde.enabled` est vrai.
 
 ```yaml
 bouncer:

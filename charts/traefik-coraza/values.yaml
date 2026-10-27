@@ -577,6 +577,20 @@ bouncer:
   #    `captcha` (elle ne teste que le 403 d'un `ban`).
   sonde:
     # L'interrupteur. Sans effet si aucun bouncer n'est activé.
+    #
+    # Pourquoi pas `true` d'office : le chart ne peut pas deviner les deux
+    # ancres (nodeName, trustedIPs — l'IP source que Traefik verra, connue du
+    # seul cluster), ni les edges. Un défaut à `true` ferait refuser le rendu
+    # de tout bouncer activé sans ces trois values. À activer avec elles :
+    #
+    #   bouncer:
+    #     forwardedHeaders:
+    #       headerName: X-Sonde-Bouncer-Ip
+    #       trustedIPs: ["10.20.0.21/32"]       # IP source du nœud ancre
+    #     sonde:
+    #       enabled: true
+    #       nodeName: worker1                   # le nœud ancre
+    #       edges: ["10.20.0.21:30443", "10.20.0.22:30443"]
     enabled: false
 
     # L'image : kubectl (pour `exec` vers la LAPI) + curl. Le tag suit la
