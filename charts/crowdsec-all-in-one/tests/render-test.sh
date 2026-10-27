@@ -31,4 +31,27 @@ case "$DEFAULT_CMD" in
 esac
 # garde : les deux agents en même temps = refus
 if render --set agentPersistentCredentials.enabled=true >/dev/null 2>&1; then fail "doit refuser agentPersistentCredentials sans crowdsec.agent.enabled=false"; fi
+# acquisition locale avec containerName (glob sur le container, défaut *)
+ACQ=$(render --set crowdsec.agent.enabled=false --set agentPersistentCredentials.enabled=true \
+  --set 'agentPersistentCredentials.acquisition[0].namespace=ingress-controller' \
+  --set 'agentPersistentCredentials.acquisition[0].podName=traefik-*' \
+  --set 'agentPersistentCredentials.acquisition[0].containerName=traefik' \
+  --set 'agentPersistentCredentials.acquisition[0].program=traefik' \
+  --set 'agentPersistentCredentials.acquisition[1].namespace=ingress-controller' \
+  --set 'agentPersistentCredentials.acquisition[1].podName=nginx-*' \
+  --set 'agentPersistentCredentials.acquisition[1].program=nginx' \
+  | yq 'select(.kind == "ConfigMap" and .metadata.name == "acquis-configmap") | .data["acquis.yaml"]')
+grep -qF '/var/log/containers/traefik-*_ingress-controller_traefik-*.log' <<<"$ACQ" || fail "containerName non pris en compte dans le glob"
+grep -qF '/var/log/containers/nginx-*_ingress-controller_*-*.log' <<<"$ACQ" || fail "containerName par défaut doit être *"
+grep -qF 'nginx-ingress-ingress-nginx-controller' <<<"$ACQ" && fail "agentPersistentCredentials.acquisition doit remplacer crowdsec.agent.acquisition"
+
+# --- NetworkPolicy LAPI : namespace de l'ingress controller d'office ----------------------
+NP_LAPI() { yq 'select(.kind == "NetworkPolicy" and (.metadata.name | test("-lapi-ingress$")))'; }
+render | NP_LAPI | yq -e '.spec.ingress[0].from[] | select(.namespaceSelector.matchLabels["kubernetes.io/metadata.name"] == "ingress-controller")' >/dev/null \
+  || fail "la NP LAPI doit autoriser le namespace ingress-controller par défaut"
+render --set networkPolicy.lapi.ingressControllerNamespace=traefik --set 'networkPolicy.lapi.from[0].podSelector.matchLabels.app=bouncer' | NP_LAPI \
+  | yq -e '(.spec.ingress[0].from | length) == 2 and (.spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"] == "traefik")' >/dev/null \
+  || fail "ingressControllerNamespace surchargé + from doivent coexister"
+[ -z "$(render --set networkPolicy.lapi.ingressControllerNamespace= | NP_LAPI)" ] \
+  || fail "ingressControllerNamespace vide et from vide : pas de NP LAPI"
 echo "OK : tests de rendu passés"

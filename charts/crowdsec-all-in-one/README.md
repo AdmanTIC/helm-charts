@@ -149,6 +149,12 @@ crowdsec:
 agentPersistentCredentials:
   enabled: true
   machineName: ""                  # défaut : <release>-agent
+  acquisition:                     # optionnel : remplace crowdsec.agent.acquisition, même format
+    - namespace: ingress-controller
+      podName: traefik-*
+      containerName: traefik       # + glob sur le container (défaut `*`) : ignore les sidecars
+      poll_without_inotify: true
+      program: traefik
 ```
 
 La copie (`templates/agent/`) ne diffère d'upstream que par l'init : si
@@ -333,10 +339,12 @@ kubectl exec -n <ns> ds/<release>-agent -- cscli scenarios list | grep myorg
 
 ### 6. NetworkPolicy
 
-Activée par défaut. Autorise par défaut intra-namespace + DNS + HTTPS sortant.
-Toute autre exposition (ingress controller → WebUI/LAPI, bouncer externe →
-LAPI, etc.) doit être déclarée dans `networkPolicy.extraIngress` /
-`networkPolicy.extraEgress`.
+Activée par défaut. Autorise par défaut intra-namespace + DNS + HTTPS sortant,
+plus une NetworkPolicy dédiée ouvrant le port LAPI (8080) au namespace de
+l'ingress controller (`networkPolicy.lapi.ingressControllerNamespace`, défaut
+`ingress-controller`) pour le bouncer HTTP, et aux sources listées dans
+`networkPolicy.lapi.from`. Toute autre exposition (scraper métriques, etc.)
+doit être déclarée dans `networkPolicy.extraIngress` / `networkPolicy.extraEgress`.
 
 ## Bouncer Calico (`calicoBouncer`)
 

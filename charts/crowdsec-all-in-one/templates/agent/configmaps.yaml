@@ -1,8 +1,10 @@
 {{- if .Values.agentPersistentCredentials.enabled }}
 {{- include "crowdsec-all-in-one.agent.context" . }}
-{{- with (dict "Values" .Values.crowdsec "Release" .Release "Chart" .Chart) }}
+{{- with (dict "Values" (fromYaml (include "crowdsec-all-in-one.agent.values" .)) "Release" .Release "Chart" .Chart) }}
 # Copies de upstream charts/crowdsec/templates/acquis-configmap.yaml et agent-configmap.yaml
 # (gardes agent.enabled retirées : upstream ne les rend plus quand son agent est désactivé).
+# Divergence locale : `containerName` (défaut `*`) dans le glob de filenames, pour ne parser
+# qu'un container du pod (ex. ignorer un sidecar verbeux). Cf. agentPersistentCredentials.acquisition.
 
 apiVersion: v1
 kind: ConfigMap
@@ -14,7 +16,7 @@ data:
     {{- range .Values.agent.acquisition }}
     ---
     filenames:
-      - /var/log/containers/{{ .podName }}_{{ .namespace }}_*.log
+      - /var/log/containers/{{ .podName }}_{{ .namespace }}_{{ .containerName | default "*" }}-*.log
     force_inotify: true
     poll_without_inotify: {{ .poll_without_inotify | default "false"}}
     labels:

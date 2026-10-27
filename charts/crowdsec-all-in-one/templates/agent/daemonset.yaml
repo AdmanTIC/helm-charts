@@ -1,7 +1,7 @@
 {{- if .Values.agentPersistentCredentials.enabled }}
 {{- include "crowdsec-all-in-one.agent.context" . }}
 {{- $machine := .Values.agentPersistentCredentials.machineName | default (printf "%s-agent" .Release.Name) }}
-{{- with (dict "Values" .Values.crowdsec "Release" .Release "Chart" .Chart "Machine" $machine) }}
+{{- with (dict "Values" (fromYaml (include "crowdsec-all-in-one.agent.values" .)) "Release" .Release "Chart" .Chart "Machine" $machine) }}
 # Copie de upstream charts/crowdsec/templates/agent-daemonset.yaml. Différences :
 #   - l'init monte le PVC de config et RÉUTILISE local_api_credentials.yaml s'il y est déjà,
 #     au lieu de ré-enregistrer une machine à chaque (re)création de sandbox (reboot du nœud →

@@ -319,6 +319,9 @@ crowdsec:
     # Sources de logs à surveiller. Chaque entrée = un filtre pod + un parser CrowdSec.
     # podName : pattern glob sur le nom de pod dans le namespace.
     # program : nom du parser CrowdSec à appliquer (nginx, apache2, sshd, …).
+    # Pour cibler un container précis du pod (`containerName`), voir
+    # agentPersistentCredentials.acquisition : le schéma JSON du sous-chart interdit
+    # toute clé supplémentaire ici.
     # poll_without_inotify : nécessaire avec containerd (les logs sont en append-only
     # via le runtime, inotify ne reçoit pas les events de manière fiable).
     acquisition:
@@ -751,6 +754,18 @@ agentPersistentCredentials:
   enabled: false
   # Nom de la machine dans la LAPI. Défaut : <release>-agent.
   machineName: ""
+  # Sources de logs de la copie locale. Vide → crowdsec.agent.acquisition est utilisé tel quel.
+  # Même format que crowdsec.agent.acquisition, plus `containerName` : glob sur le nom du
+  # container dans le pod, défaut `*` (tous). Utile quand le pod de l'ingress controller
+  # embarque un sidecar verbeux dont on ne veut pas parser les logs. Cette clé vit ici car le
+  # schéma JSON du sous-chart interdit toute clé inconnue dans crowdsec.agent.acquisition.
+  acquisition: []
+  # Exemple :
+  #   - namespace: ingress-controller
+  #     podName: traefik-*
+  #     containerName: traefik
+  #     poll_without_inotify: true
+  #     program: traefik
 
 collectionsJob:
   enabled: true
@@ -1276,15 +1291,23 @@ networkPolicy:
     # Port du service LAPI (aligné sur crowdsec.lapi du sub-chart).
     port: 8080
     # true = ouvre le port LAPI à toute source (tous namespaces), sans tenir
-    # compte de `from`. Équivalent du choix fait pour allowWebuiIngress.
+    # compte de `ingressControllerNamespace` et `from`. Équivalent du choix
+    # fait pour allowWebuiIngress.
     allowFromAll: false
-    # Sources autorisées (format standard `from` d'une règle ingress
-    # NetworkPolicy). Vider la liste (from: []) pour désactiver complètement
-    # la NP dédiée (retour au comportement intra-namespace strict).
-    from:
-      - namespaceSelector:
-          matchLabels:
-            kubernetes.io/metadata.name: ingress-controller
+    # Namespace de l'ingress controller qui héberge le bouncer HTTP (plugin
+    # Traefik, ingress-nginx, …). Règle ajoutée d'office : tout pod de ce
+    # namespace peut joindre LAPI. Mettre "" pour ne pas la générer.
+    ingressControllerNamespace: ingress-controller
+    # Sources supplémentaires (format standard `from` d'une règle ingress
+    # NetworkPolicy), ajoutées à la règle ci-dessus.
+    from: []
+    # Exemple — un bouncer applicatif dans un autre namespace :
+    #   - namespaceSelector:
+    #       matchLabels:
+    #         kubernetes.io/metadata.name: my-app
+    #     podSelector:
+    #       matchLabels:
+    #         app: my-bouncer
 
   # Additional ingress rules appended to the intra-namespace allow.
   # Standard NetworkPolicy ingress rule format — each entry is a rule object.

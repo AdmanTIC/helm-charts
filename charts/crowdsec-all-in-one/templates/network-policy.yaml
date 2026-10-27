@@ -129,7 +129,7 @@ spec:
 # Ne cible QUE les pods LAPI (labels posés par le sub-chart crowdsec) et
 # n'ouvre QUE le port 8080/TCP. Risque résiduel faible : LAPI exige une clé
 # API de bouncer ou un login machine.
-{{- if or .Values.networkPolicy.lapi.allowFromAll .Values.networkPolicy.lapi.from }}
+{{- if or .Values.networkPolicy.lapi.allowFromAll .Values.networkPolicy.lapi.ingressControllerNamespace .Values.networkPolicy.lapi.from }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -152,9 +152,17 @@ spec:
         - protocol: TCP
           port: {{ .Values.networkPolicy.lapi.port }}
     {{- else }}
-    # Mode ciblé : uniquement les sources listées dans networkPolicy.lapi.from.
+    # Mode ciblé : le namespace de l'ingress controller (bouncer HTTP) d'office
+    # + les sources listées dans networkPolicy.lapi.from.
     - from:
-        {{- toYaml .Values.networkPolicy.lapi.from | nindent 8 }}
+        {{- with .Values.networkPolicy.lapi.ingressControllerNamespace }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+        {{- with .Values.networkPolicy.lapi.from }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.networkPolicy.lapi.port }}
