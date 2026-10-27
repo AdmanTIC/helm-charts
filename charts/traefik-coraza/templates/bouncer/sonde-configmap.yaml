@@ -1,0 +1,76 @@
+{{- $bn := .Values.bouncer }}
+{{- if and (eq (include "bouncer.anyEnabled" .) "true") $bn.sonde.enabled }}
+# ---------------------------------------------------------------------------
+#  Le script de la sonde du bouncer. Statique : tout ce qui varie arrive par
+#  l'environnement (voir le CronJob voisin), pour que le script se lise sans
+#  dérouler Helm. Le POURQUOI et les pièges : values.yaml, bloc bouncer.sonde.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bouncer.sondeName" . }}-script
+  labels:
+    {{- include "bouncer.sondeLabels" . | nindent 4 }}
+data:
+  sonde.sh: |
+    #!/bin/sh
+    # Le tour complet : ban de test -> 403 sur chaque edge -> levée -> plus de 403.
+    # Sortie 1 = au moins une étape ratée ; c'est le Job Failed que la supervision remonte.
+    set -u
+
+    # Le code HTTP d'un edge pour une requête qui porte l'IP de test. `000` = injoignable.
+    # L'hôte est un nom réservé (.invalid) : la requête tombe sur le catch-all du chart,
+    # donc sur le bouncer accroché, quel que soit l'Ingress applicatif.
+    probe() {
+      curl -ksm5 -o /dev/null -w '%{http_code}' \
+        -H 'Host: sonde-bouncer.invalid' -H "${HEADER}: ${TEST_IP}" "https://$1/" || echo 000
+    }
+
+    # cscli dans le pod LAPI, déjà authentifié : aucune clé à porter.
+    cs() { kubectl -n "${CROWDSEC_NAMESPACE}" exec "deploy/${LAPI_DEPLOYMENT}" -- cscli "$@"; }
+
+    # Attend que chaque edge atteigne l'état voulu : `ban` = répond 403, `leve` = répond
+    # autre chose que 403 (et que 000 : un nœud muet n'est pas un nœud débanni).
+    wait_state() {
+      want=$1; pending=" ${EDGES}"; elapsed=0
+      while :; do
+        rest=""
+        for e in ${pending}; do
+          code=$(probe "$e")
+          if { [ "$want" = ban ] && [ "$code" = 403 ]; } || \
+             { [ "$want" = leve ] && [ "$code" != 403 ] && [ "$code" != 000 ]; }; then
+            echo "  $e -> $code (${elapsed}s)"
+          else
+            rest="$rest $e"
+          fi
+        done
+        pending=$rest
+        [ -z "$pending" ] && return 0
+        if [ "$elapsed" -ge "$TIMEOUT" ]; then
+          echo "ECHEC ($want) : toujours pas dans l'état attendu après ${TIMEOUT}s :${pending}"
+          return 1
+        fi
+        sleep 10; elapsed=$((elapsed+10))
+      done
+    }
+
+    fail=0
+    echo "-- état initial (un 403 ici est un reliquat d'un passage raté) --"
+    for e in ${EDGES}; do echo "  $e: $(probe "$e")"; done
+
+    if [ "${DRY_RUN}" = "true" ]; then
+      echo "dryRun : aucune décision posée."
+      exit 0
+    fi
+
+    echo "-- pose du ban de test (${TEST_IP}, ${BAN_DURATION}) --"
+    cs decisions add --ip "${TEST_IP}" --duration "${BAN_DURATION}" --reason sonde-bouncer || exit 1
+    wait_state ban || fail=1
+
+    echo "-- levée --"
+    cs decisions delete --ip "${TEST_IP}" || fail=1
+    wait_state leve || fail=1
+
+    [ "$fail" = 0 ] && echo "OK : pose et levée appliquées partout."
+    exit "$fail"
+{{- end }}
