@@ -12,12 +12,12 @@ type: application
 # batch/v1, networking.k8s.io/v1, rbac/v1, traefik.io/v1alpha1.
 #
 # Ne pas durcir sans raison mesurée. Pour les clusters K8s 1.23, utiliser la
-# release 0.6.1, épinglée sur le subchart 39.0.9 — rendu équivalent, arguments
+# release 0.6.2, épinglée sur le subchart 39.0.9 — rendu équivalent, arguments
 # Traefik identiques.
 kubeVersion: ">=1.25.0-0"
 
 # version du chart wrapper
-version: 0.7.2
+version: 0.8.0
 # Version du CRS embarquée dans l'image Coraza (OWASP_CRS/4.28.0). Purement
 # documentaire : le tag réellement déployé est écrit dans values.yaml, à un
 # emplacement par conteneur, et doit être épinglé à la main.
@@ -39,7 +39,7 @@ dependencies:
   # d'override de values.yaml sont validées contre CETTE version — deux d'entre
   # elles changent de forme entre les majeures 39 et 41 (cf. README).
   # Contrepartie : le chart amont exige kubeVersion >=1.25.0-0 à partir de la
-  # majeure 40. Les clusters 1.23 doivent rester sur la release 0.6.1.
+  # majeure 40. Les clusters 1.23 doivent rester sur la release 0.6.2.
   - name: traefik
     version: "41.0.2"
     repository: https://traefik.github.io/charts

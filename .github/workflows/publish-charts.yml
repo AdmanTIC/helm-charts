@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - master
+      # Branche de compatibilité K8s 1.23 de traefik-coraza (subchart 39.0.9) :
+      # seul CE chart y est packagé et poussé — les autres charts y sont figés
+      # à un état ancien et ne doivent pas écraser leurs versions publiées.
+      - traefik-coraza/0.6.x
   # Relance manuelle, depuis l'onglet Actions ou `gh workflow run publish-charts.yml`.
   # Ajouté après la panne Actions du 2026-08-26 : l'événement de push avait été
   # jeté par GitHub, et sans ce déclencheur il n'y avait aucun moyen de relancer
@@ -28,7 +32,13 @@ jobs:
         set -ex
         rm -rf packaged-charts
         mkdir packaged-charts
-        for CHART in charts/*/ ;
+        # Sur la branche de compatibilité, un seul chart ; sur master, tous.
+        if [ "${GITHUB_REF_NAME}" = "traefik-coraza/0.6.x" ]; then
+          CHARTS="charts/traefik-coraza/"
+        else
+          CHARTS="charts/*/"
+        fi
+        for CHART in $CHARTS ;
         do
           helm package -d packaged-charts $CHART ;
         done;

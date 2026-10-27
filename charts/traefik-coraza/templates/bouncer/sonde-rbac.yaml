@@ -1,0 +1,59 @@
+{{- $bn := .Values.bouncer }}
+{{- if and (eq (include "bouncer.anyEnabled" .) "true") $bn.sonde.enabled }}
+# ---------------------------------------------------------------------------
+#  Le droit d'entrer dans le pod LAPI — et RIEN d'autre.
+#
+#  La sonde pose et retire sa décision par `kubectl exec deploy/<lapi> -- cscli …` :
+#  `cscli` y est déjà authentifié auprès de la LAPI, aucune clé à créer ni à
+#  porter en Secret. Le prix est un droit `pods/exec` — dans le NAMESPACE
+#  CROWDSEC seulement (Role + RoleBinding posés là-bas, comme le job
+#  d'enregistrement), porté par le seul ServiceAccount de la sonde, qui vit
+#  dans le namespace du release.
+#
+#  ⚠️ `pods/exec` DANS CE NAMESPACE VAUT « exécuter dans n'importe quel pod
+#  CrowdSec », agents compris : Kubernetes ne sait pas restreindre l'exec à un
+#  pod nommé quand les noms sont générés. C'est borné par le namespace et par
+#  QUI le porte.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "bouncer.sondeName" . }}
+  labels:
+    {{- include "bouncer.sondeLabels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "bouncer.sondeName" . }}
+  namespace: {{ $bn.crowdsec.namespace }}
+  labels:
+    {{- include "bouncer.sondeLabels" . | nindent 4 }}
+rules:
+  # `kubectl exec deploy/…` résout le Deployment, liste ses pods, puis ouvre l'exec.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "bouncer.sondeName" . }}
+  namespace: {{ $bn.crowdsec.namespace }}
+  labels:
+    {{- include "bouncer.sondeLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "bouncer.sondeName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "bouncer.sondeName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

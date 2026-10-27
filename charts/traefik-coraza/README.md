@@ -27,12 +27,12 @@ templates : ils vivent dans les values du subchart, qui les rend via
 Le subchart Traefik est épinglé en **41.0.2 (Traefik v3.7.5)**, qui exige
 `kubeVersion >=1.25.0-0`.
 
-| | Ce chart (`0.7.0`+) | Release `0.6.1` |
+| | Ce chart (`0.7.0`+) | Release `0.6.2` |
 |---|---|---|
 | subchart Traefik | 41.0.2 (v3.7.5) | 39.0.9 (v3.6.13) |
 | Kubernetes | **1.25+** | **1.22+** (vérifié sur 1.23.6) |
 
-**Pour un cluster en 1.23, utiliser la release `0.6.1`**, publiée pour cet
+**Pour un cluster en 1.23, utiliser la release `0.6.2`**, publiée pour cet
 usage. Les deux rendus sont équivalents : arguments Traefik identiques au
 caractère près, diff complet des manifests limité au label `helm.sh/chart`.
 Sur 1.23, `maxSurge` (DaemonSet) et `internalTrafficPolicy` sont en bêta plutôt
@@ -45,7 +45,7 @@ depuis février 2023.
 Piège en changeant de majeure : le chart amont a un schéma JSON qui **rejette**
 les clés de l'autre forme.
 
-| Clé en 41.x (ce chart) | Clé en 39.x (`0.6.1`) |
+| Clé en 41.x (ce chart) | Clé en 39.x (`0.6.2`) |
 |---|---|
 | `service.spec.type`, `service.spec.externalTrafficPolicy` | `service.type`, `service.externalTrafficPolicy` |
 | `log` / `accessLog` | `logs.general` / `logs.access` |
@@ -954,6 +954,80 @@ Coraza, lui, l'inspecte toujours.
 Alternative : laisser `attach.enabled: false` et référencer le middleware
 depuis vos Ingress/IngressRoute applicatifs (noms stables tant que
 `bouncer.hashSuffix` reste `false`).
+
+### Mode permissif et sonde (`bouncer.updateMaxFailure`, `bouncer.sonde`)
+
+Le bouncer est **permissif par défaut** (`updateMaxFailure: "-1"`) : quand la
+LAPI ne répond plus, la dernière copie locale des décisions continue de
+s'appliquer et les IP inconnues passent. On perd les *nouveaux* bans le temps
+de la panne, on ne coupe pas le public. L'autre réglage (`"0"`, défaut du
+plugin) refuse **tout** le trafic au premier rafraîchissement en échec.
+
+🛑 Revers du permissif : un bouncer qui n'applique plus rien **ne le dit
+jamais** — le trafic passe, les pulls réussissent, `cscli` est verte. Constaté
+en production deux jours de suite (cache du plugin troué par le `deleted`
+d'une décision courte co-existant avec une longue sur la même IP, le flux ne
+ré-annonçant jamais). D'où la sonde, le seul test qui vaille, le tour complet :
+
+1. pose un ban (`cscli` par `kubectl exec` dans le pod LAPI) sur une IP de
+   **test**, `192.0.2.42` (TEST-NET-1, RFC 5737, jamais routée : bannir cette
+   IP ne coupe personne) ;
+2. vérifie que **chaque edge** répond 403 à une requête qui la porte ;
+3. supprime le ban, et vérifie que le 403 se lève — le chemin `deleted` est
+   précisément celui qui a cassé ;
+4. échoue sinon (Job `Failed`, `backoffLimit: 0`, pas de rejeu), en nommant
+   l'edge fautif — c'est cet état que la supervision remonte.
+
+Elle n'est rendue que si un bouncer est activé (sans bouncer, rien à prouver)
+et reste **désactivée par défaut**, à dessein : elle a besoin de deux ancres
+que le chart ne peut pas deviner (le nœud d'où elle émet, et l'IP source que
+Traefik verra pour ce nœud) ainsi que de la liste des edges. Un défaut à
+`true` ferait refuser le rendu de tout bouncer activé sans ces values. Les
+trois sont exigées par le schéma et la garde dès que `sonde.enabled` est vrai.
+
+```yaml
+bouncer:
+  forwardedHeaders:            # la porte : l'IP de test voyage dans cet en-tête…
+    headerName: X-Sonde-Bouncer-Ip
+    trustedIPs: ["10.20.0.21/32"]   # …cru UNIQUEMENT depuis le nœud ancre
+  sonde:
+    enabled: true
+    nodeName: worker1          # le nœud ancre : d'où la sonde émet
+    edges:                     # chaque nœud portant Traefik, en HTTPS
+      - 10.20.0.21:30443       # `hôte:port` (NodePort websecure), ou `hôte`
+      - 10.20.0.22:30443
+```
+
+🛑 **Pourquoi un en-tête.** La sonde ne peut pas bannir sa propre IP (SNAT du
+CNI, IP de pod éphémère) ni celle d'un nœud (vrais flux coupés). L'IP de test
+voyage donc dans `forwardedHeaders.headerName`, que le plugin ne croit que
+depuis `forwardedHeaders.trustedIPs` : l'IP source vue par Traefik pour un pod
+du nœud ancre, en général l'IP du nœud SNATée par le CNI, à relever dans
+l'accessLog Traefik (`ClientHost`). Les deux ancres (`sonde.nodeName`,
+`forwardedHeaders.trustedIPs`) évoluent **ensemble**. Un désaccord ne casse
+rien : l'en-tête est ignoré et la sonde échoue « jamais 403 » sur tous les
+edges, le même symptôme qu'une vraie panne.
+
+Viser chaque nœud et non la VIP : derrière une VIP un seul nœud répond, les
+autres resteraient non prouvés. L'hôte de la requête est `sonde-bouncer.invalid`
+: elle tombe sur le catch-all, donc sur le bouncer accroché par `attach`.
+
+Le droit nécessaire est un `pods/exec` dans le namespace CrowdSec, porté par le
+seul ServiceAccount de la sonde (Role + RoleBinding posés là-bas, comme le job
+d'enregistrement). ⚠️ Dans ce namespace, `pods/exec` vaut « exécuter dans
+n'importe quel pod CrowdSec » : Kubernetes ne restreint pas l'exec à un pod
+nommé. Le Deployment visé est `sonde.lapiDeployment` (défaut `crowdsec-lapi`,
+release `crowdsec` de crowdsec-all-in-one).
+
+Ce que la sonde **ne prouve pas** : le jugement de l'IP réelle d'un client
+(elle passe par l'en-tête), ni la remédiation `captcha` (elle ne teste que le
+403 d'un `ban`). `sonde.dryRun: true` fait les requêtes de base sans poser de
+décision.
+
+```bash
+kubectl -n <ns-traefik> get jobs -l app.kubernetes.io/component=crowdsec-bouncer-sonde
+kubectl -n <ns-traefik> logs -l app.kubernetes.io/component=crowdsec-bouncer-sonde --tail=50
+```
 
 ### Charte graphique
 

@@ -84,6 +84,19 @@
 {{- end }}
 {{- end }}
 
+{{- /* --- Sonde : ses deux ancres et sa porte ------------------------------- */}}
+{{- if $bn.sonde.enabled }}
+{{- if not $bn.sonde.nodeName }}
+{{- fail "\n\nbouncer.sonde.nodeName est VIDE.\n\nLa sonde doit émettre depuis UN nœud connu : c'est l'IP source de ce nœud que\nle plugin croit porteuse de l'en-tête d'IP de test\n(bouncer.forwardedHeaders.trustedIPs). Renseigner le nom du nœud\n(label kubernetes.io/hostname) :\n\n  bouncer:\n    sonde:\n      nodeName: worker1\n" }}
+{{- end }}
+{{- if not $bn.sonde.edges }}
+{{- fail "\n\nbouncer.sonde.edges est VIDE.\n\nLa sonde vérifie le 403 sur CHAQUE nœud portant Traefik (pas sur la VIP :\nun seul nœud y répondrait). Un `hôte` ou `hôte:port`, joint en HTTPS :\n\n  bouncer:\n    sonde:\n      edges: [\"10.20.0.21:30443\", \"10.20.0.22:30443\"]\n" }}
+{{- end }}
+{{- if or (not $bn.forwardedHeaders.trustedIPs) (not $bn.forwardedHeaders.headerName) }}
+{{- fail (printf "\n\nbouncer.sonde est activée mais la PORTE de la sonde n'est pas ouverte :\nbouncer.forwardedHeaders.trustedIPs et headerName doivent être renseignés.\n\nL'IP de test (%s) voyage dans cet en-tête, et le plugin ne le croit que\ndepuis ces sources. trustedIPs = l'IP source vue par Traefik pour un pod du\nnœud ancre %q (en général l'IP du nœud, SNATée par le CNI — à relever dans\nl'accessLog Traefik, champ ClientHost) :\n\n  bouncer:\n    forwardedHeaders:\n      trustedIPs: [\"10.20.0.21/32\"]\n      headerName: X-Sonde-Bouncer-Ip\n\nSans ça l'en-tête est ignoré et la sonde échouerait « jamais 403 » partout.\n" $bn.sonde.testIP ($bn.sonde.nodeName | default "<nodeName>")) }}
+{{- end }}
+{{- end }}
+
 {{- /* --- Accrochage --------------------------------------------------------- */}}
 {{- if $bn.attach.enabled }}
 {{- if not .Values.catchAll.enabled }}

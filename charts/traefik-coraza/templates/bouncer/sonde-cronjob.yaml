@@ -1,0 +1,90 @@
+{{- $bn := .Values.bouncer }}
+{{- if and (eq (include "bouncer.anyEnabled" .) "true") $bn.sonde.enabled }}
+# ---------------------------------------------------------------------------
+#  Le CronJob de la sonde du bouncer. Le POURQUOI et les pièges : values.yaml,
+#  bloc bouncer.sonde. Les pré-requis (nœud ancre, edges, en-tête de confiance)
+#  sont vérifiés au rendu par bouncer/guard.yaml.
+#
+#  ⚠️ L'ALERTE, C'EST LE JOB `Failed` : `backoffLimit: 0` — un tour raté ne se
+#  rejoue pas (le suivant arrive à la période suivante), il ÉCHOUE, et c'est
+#  cet état que la supervision remonte. `restartPolicy: Never` pour la même
+#  raison.
+# ---------------------------------------------------------------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "bouncer.sondeName" . }}
+  labels:
+    {{- include "bouncer.sondeLabels" . | nindent 4 }}
+spec:
+  schedule: {{ $bn.sonde.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ int $bn.sonde.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ int $bn.sonde.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: {{ int $bn.sonde.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            {{- include "bouncer.sondeLabels" . | nindent 12 }}
+        spec:
+          serviceAccountName: {{ include "bouncer.sondeName" . }}
+          restartPolicy: Never
+          # 🛑 LE NŒUD ANCRE : l'IP source de CE nœud est la seule que le plugin
+          # croit porteuse de l'en-tête (bouncer.forwardedHeaders.trustedIPs).
+          nodeSelector:
+            kubernetes.io/hostname: {{ $bn.sonde.nodeName | quote }}
+          # Conforme au profil PodSecurity `restricted`.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: sonde
+              image: {{ $bn.sonde.image | quote }}
+              command: ["/bin/sh", "/sonde/sonde.sh"]
+              env:
+                - name: CROWDSEC_NAMESPACE
+                  value: {{ $bn.crowdsec.namespace | quote }}
+                - name: LAPI_DEPLOYMENT
+                  value: {{ $bn.sonde.lapiDeployment | quote }}
+                - name: EDGES
+                  value: {{ join " " $bn.sonde.edges | quote }}
+                - name: TEST_IP
+                  value: {{ $bn.sonde.testIP | quote }}
+                # Le même mot que côté plugin, par construction : une seule value.
+                - name: HEADER
+                  value: {{ $bn.forwardedHeaders.headerName | quote }}
+                - name: BAN_DURATION
+                  value: {{ $bn.sonde.banDuration | quote }}
+                - name: TIMEOUT
+                  value: {{ $bn.sonde.propagationTimeoutSeconds | quote }}
+                - name: DRY_RUN
+                  value: {{ $bn.sonde.dryRun | quote }}
+                # kubectl écrit son cache sous $HOME ; la racine est en lecture seule.
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: script
+                  mountPath: /sonde
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                {{- toYaml $bn.sonde.resources | nindent 16 }}
+          volumes:
+            - name: script
+              configMap:
+                name: {{ include "bouncer.sondeName" . }}-script
+            - name: tmp
+              emptyDir: {}
+{{- end }}

@@ -450,10 +450,16 @@ bouncer:
 
   # Comportement quand la LAPI ne répond plus. Défaut plugin `0` : au premier
   # rafraîchissement en échec, le flux est marqué malade et TOUT est refusé
-  # (403). `-1` = mode permissif : la dernière copie locale continue de
+  # (403). `-1` = mode PERMISSIF : la dernière copie locale continue de
   # s'appliquer, les IP inconnues passent — on perd les NOUVEAUX bans le temps
   # de la panne, on ne coupe pas le public.
-  updateMaxFailure: "0"
+  #
+  # Permissif PAR DÉFAUT : un incident CrowdSec (LAPI en rollout, PgBouncer
+  # saturé) ne doit pas se transformer en 403 pour tout le monde. 🛑 Revers :
+  # un bouncer permissif qui n'applique plus rien NE LE DIT JAMAIS — le trafic
+  # passe, les pulls réussissent, `cscli` est verte. C'est la raison d'être de
+  # `bouncer.sonde` ci-dessous : l'activer avec ce mode.
+  updateMaxFailure: "-1"
 
   # Période (secondes) du rafraîchissement de la copie locale des décisions en
   # mode `stream`. Défaut plugin : 60 s — c'est le délai de prise en compte
@@ -541,7 +547,121 @@ bouncer:
     trustedIPs: []
     # ex: ["10.20.0.41/32"]
     headerName: ""
-    # ex: X-Probe-Client-Ip
+    # ex: X-Sonde-Bouncer-Ip
+
+  # ---------------------------------------------------------------------------
+  # sonde — la preuve que le bouncer applique encore les décisions
+  # ---------------------------------------------------------------------------
+  # Un CronJob qui fait le SEUL test qui vaille, le tour complet :
+  #   1. pose un ban (cscli, via un `kubectl exec` dans le pod LAPI) sur une IP
+  #      de TEST — 192.0.2.42, plage TEST-NET-1 (RFC 5737), jamais routée :
+  #      bannir cette IP ne coupe personne ;
+  #   2. vérifie que CHAQUE edge répond 403 à une requête qui la porte ;
+  #   3. supprime le ban, et vérifie que le 403 se lève — le chemin `deleted`
+  #      est précisément celui qui a cassé en prod (2026-09-03 et 04 : cache du
+  #      plugin troué par le `deleted` d'une décision courte co-existant avec
+  #      une longue sur la même IP, le flux ne ré-annonçant jamais) ;
+  #   4. échoue (Job `Failed`, backoffLimit 0 : pas de rejeu) sinon, en nommant
+  #      l'edge fautif — c'est cet état que la supervision remonte.
+  #
+  # Rendue UNIQUEMENT si un bouncer (ban ou captcha) est activé : sans
+  # bouncer, elle n'a rien à prouver. Indispensable avec updateMaxFailure: -1
+  # (le défaut), le mode permissif étant muet par construction.
+  #
+  # 🛑 COMMENT LA REQUÊTE « PORTE » L'IP DE TEST : la sonde ne peut pas bannir
+  #    sa propre IP (SNAT du CNI, IP de pod éphémère) ni celle d'un nœud (vrais
+  #    flux coupés). L'IP de test voyage donc dans l'en-tête
+  #    `forwardedHeaders.headerName`, que le plugin ne croit QUE depuis
+  #    `forwardedHeaders.trustedIPs`. D'où DEUX ANCRES, à faire évoluer
+  #    ENSEMBLE :
+  #      sonde.nodeName               = le nœud d'où la sonde émet ;
+  #      forwardedHeaders.trustedIPs  = l'IP source vue par Traefik pour un
+  #                                     pod de CE nœud (en général l'IP du
+  #                                     nœud, SNATée par le CNI — à relever
+  #                                     dans l'accessLog Traefik, ClientHost).
+  #    Un désaccord ne casse rien : l'en-tête est ignoré, la sonde échoue
+  #    « jamais 403 » sur TOUS les edges — le même symptôme qu'une vraie panne.
+  #
+  # ⚠️ CE QUE LA SONDE NE PROUVE PAS : le jugement de l'IP RÉELLE d'un client
+  #    (elle passe par l'en-tête, pas par l'adresse source), ni la remédiation
+  #    `captcha` (elle ne teste que le 403 d'un `ban`).
+  sonde:
+    # L'interrupteur. Sans effet si aucun bouncer n'est activé.
+    #
+    # Pourquoi pas `true` d'office : le chart ne peut pas deviner les deux
+    # ancres (nodeName, trustedIPs — l'IP source que Traefik verra, connue du
+    # seul cluster), ni les edges. Un défaut à `true` ferait refuser le rendu
+    # de tout bouncer activé sans ces trois values. À activer avec elles :
+    #
+    #   bouncer:
+    #     forwardedHeaders:
+    #       headerName: X-Sonde-Bouncer-Ip
+    #       trustedIPs: ["10.20.0.21/32"]       # IP source du nœud ancre
+    #     sonde:
+    #       enabled: true
+    #       nodeName: worker1                   # le nœud ancre
+    #       edges: ["10.20.0.21:30443", "10.20.0.22:30443"]
+    enabled: false
+
+    # L'image : kubectl (pour `exec` vers la LAPI) + curl. Le tag suit la
+    # version de kubectl ; tolérance client/serveur ±1 mineure.
+    image: alpine/k8s:1.33.4
+
+    # Toutes les 30 minutes : la fenêtre d'aveuglement maximale acceptée.
+    # Chaque passage occupe l'IP de test ~4 min ; deux passages ne se
+    # chevauchent jamais (concurrencyPolicy: Forbid).
+    schedule: '*/30 * * * *'
+
+    # 🛑 LE NŒUD ANCRE (nodeSelector kubernetes.io/hostname) — REQUIS (garde),
+    #    voir l'avertissement en tête. Nœud drainé → Job Pending puis échec par
+    #    activeDeadlineSeconds : une alerte, pas un silence.
+    nodeName: ""
+
+    # 🛑 REQUIS (garde) : les edges à vérifier, UN PAR NŒUD portant Traefik —
+    #    joints en HTTPS, `hôte` ou `hôte:port`. Viser chaque nœud, pas la
+    #    VIP : derrière une VIP un seul nœud répond, les autres resteraient
+    #    non prouvés. Avec le Service NodePort du chart : `<ip-nœud>:<nodePort
+    #    websecure>` ; en hostPort ou keepalived : `<ip-nœud>` (443).
+    edges: []
+    # ex: ["10.20.0.21:30443", "10.20.0.22:30443"]
+
+    # L'IP de test bannie puis débannie. TEST-NET-1 (RFC 5737) : jamais routée.
+    testIP: 192.0.2.42
+
+    # Durée du ban de test. Filet de sécurité : si la levée (delete) échoue, la
+    # décision expire seule — et son `deleted` d'expiration purge l'IP de test
+    # du cache du plugin.
+    banDuration: 4m
+
+    # Délai maximal accordé à la propagation (pose ET levée). Le plugin tire le
+    # flux toutes les updateIntervalSeconds ; prévoir deux tirages + marge.
+    propagationTimeoutSeconds: 150
+
+    # Pire cas mesurable : 2 × propagationTimeoutSeconds + les exec cscli.
+    # Au-delà, quelque chose pend (nœud ancre drainé, apiserver injoignable) :
+    # échec franc plutôt qu'un Job zombie.
+    activeDeadlineSeconds: 600
+
+    # Le Deployment de la LAPI, dans bouncer.crowdsec.namespace, où `cscli`
+    # est déjà authentifié : aucune clé à créer ni à porter en Secret. Défaut
+    # aligné sur crowdsec-all-in-one (release `crowdsec` → `crowdsec-lapi`).
+    lapiDeployment: crowdsec-lapi
+
+    # `true` : la sonde fait les requêtes de base mais ne pose AUCUNE décision
+    # (mode observation). À `false`, l'action se limite à bannir banDuration
+    # une IP de documentation que personne ne porte.
+    dryRun: false
+
+    # Nombre de Jobs conservés : les échecs doivent rester visibles.
+    successfulJobsHistoryLimit: 1
+    failedJobsHistoryLimit: 3
+
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
 
   # ---------------------------------------------------------------------------
   # ban — bouncer de REJET des décisions « ban »
@@ -686,7 +806,7 @@ standaloneNaming:
 # -----------------------------------------------------------------------------
 #  Subchart Traefik — overrides
 #  Clés alignées sur le chart 41.0.2 (cf. Chart.yaml). Deux d'entre elles ont
-#  une autre forme dans la majeure 39, celle de la release 0.6.1 (K8s 1.23) :
+#  une autre forme dans la majeure 39, celle de la release 0.6.2 (K8s 1.23) :
 #      `service.spec.type`             ← `service.type` en 39.x
 #      `service.spec.externalTrafficPolicy` ← `service.externalTrafficPolicy`
 #      `log`/`accessLog`               ← `logs.general`/`logs.access`
@@ -1225,7 +1345,7 @@ traefik:
   service:
     enabled: true
     # Chart 41.x : le type et le reste du ServiceSpec passent par `spec`.
-    # (En 39.x c'étaient des clés directes — cf. la release 0.6.1, compatible
+    # (En 39.x c'étaient des clés directes — cf. la release 0.6.2, compatible
     # K8s 1.23.)
     spec:
       type: NodePort
@@ -1308,7 +1428,7 @@ traefik:
 
   # --- Observabilité ---------------------------------------------------------
   # Chart 41.x : `log` et `accessLog` sont deux clés de premier niveau. (En
-  # 39.x c'était `logs.general` / `logs.access` — cf. la release 0.6.1.)
+  # 39.x c'était `logs.general` / `logs.access` — cf. la release 0.6.2.)
   log:
     level: INFO
     format: json

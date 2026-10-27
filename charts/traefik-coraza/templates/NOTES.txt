@@ -168,3 +168,25 @@ Vérifications à faire maintenant :
    doit porter ipStrategy.depth: 1, sinon il compare le pair TCP (127.0.0.1)
    et renvoie 403 :
      kubectl get middlewares -A -o json | jq -r '.items[] | select(.spec.ipAllowList or .spec.rateLimit) | "\(.metadata.namespace)/\(.metadata.name)"'
+{{- $bn := .Values.bouncer }}
+{{- if eq (include "bouncer.anyEnabled" .) "true" }}
+
+Bouncer CrowdSec : {{ if $bn.ban.enabled }}ban {{ end }}{{ if $bn.captcha.enabled }}captcha {{ end }}— mode {{ if eq (toString $bn.updateMaxFailure) "-1" }}PERMISSIF (updateMaxFailure -1){{ else }}STRICT (updateMaxFailure {{ $bn.updateMaxFailure }}){{ end }}
+{{- if eq (toString $bn.updateMaxFailure) "-1" }}
+  → une LAPI injoignable laisse passer le trafic sur la dernière copie des
+    décisions. Un bouncer permissif qui n'applique plus rien NE LE DIT JAMAIS.
+{{- else }}
+  → une LAPI injoignable fait refuser TOUT le trafic (403) au premier
+    rafraîchissement en échec.
+{{- end }}
+{{- if $bn.sonde.enabled }}
+  sonde : CronJob {{ include "bouncer.sondeName" . }} ({{ $bn.sonde.schedule }}), depuis le nœud
+  {{ $bn.sonde.nodeName }}, vers {{ join ", " $bn.sonde.edges }}.
+  Un Job Failed = le bouncer n'applique plus (ou plus partout) :
+     kubectl -n {{ .Release.Namespace }} get jobs -l app.kubernetes.io/component=crowdsec-bouncer-sonde
+     kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/component=crowdsec-bouncer-sonde --tail=50
+{{- else }}
+  ⚠️ sonde DÉSACTIVÉE (bouncer.sonde.enabled: false) : rien ne prouve que les
+     décisions sont encore appliquées. Avec le mode permissif, l'activer.
+{{- end }}
+{{- end }}

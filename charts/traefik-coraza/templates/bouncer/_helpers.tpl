@@ -32,6 +32,25 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{/*
+La sonde du bouncer (bouncer.sonde) : nom et labels de ses objets — CronJob,
+ConfigMap du script, ServiceAccount, Role/RoleBinding dans le namespace CrowdSec.
+*/}}
+{{- define "bouncer.sondeName" -}}
+{{ include "bouncer.name" . }}-sonde
+{{- end }}
+
+{{- define "bouncer.sondeLabels" -}}
+helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
+app.kubernetes.io/name: {{ include "bouncer.sondeName" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: crowdsec-bouncer-sonde
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
 Rendu d'une page depuis files/bouncer/, avec substitution des marqueurs
 %%...%% depuis bouncer.branding. 🛑 Ne JAMAIS passer ces fichiers par `tpl` :
 ils contiennent des doubles accolades ({{ .ClientIP }}, {{ .SiteKey }},
