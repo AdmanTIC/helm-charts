@@ -24,12 +24,12 @@ templates : ils vivent dans les values du subchart, qui les rend via
 
 ## Version du subchart et compatibilité Kubernetes
 
-🛑 **Cette version du chart (`0.6.2`) est la release de rétrocompatibilité
+🛑 **Cette version du chart (`0.6.3`) est la release de rétrocompatibilité
 K8s 1.23.** Le subchart Traefik est épinglé en **39.0.9 (Traefik v3.6.13)**,
 dernière version stable déclarant `kubeVersion >=1.22.0-0`. À partir de la
 majeure 40, le chart amont exige `>=1.25.0-0`.
 
-| | Ce chart `0.6.2` | Versions suivantes |
+| | Ce chart `0.6.3` | Versions suivantes |
 |---|---|---|
 | subchart Traefik | 39.0.9 (v3.6.13) | 41.x (v3.7.x) |
 | Kubernetes | **1.22+** (vérifié sur 1.23.6) | 1.25+ |
