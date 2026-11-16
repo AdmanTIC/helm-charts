@@ -27,12 +27,12 @@ templates : ils vivent dans les values du subchart, qui les rend via
 Le subchart Traefik est épinglé en **41.0.2 (Traefik v3.7.5)**, qui exige
 `kubeVersion >=1.25.0-0`.
 
-| | Ce chart (`0.7.0`+) | Release `0.6.2` |
+| | Ce chart (`0.7.0`+) | Release `0.6.3` |
 |---|---|---|
 | subchart Traefik | 41.0.2 (v3.7.5) | 39.0.9 (v3.6.13) |
 | Kubernetes | **1.25+** | **1.22+** (vérifié sur 1.23.6) |
 
-**Pour un cluster en 1.23, utiliser la release `0.6.2`**, publiée pour cet
+**Pour un cluster en 1.23, utiliser la release `0.6.3`**, publiée pour cet
 usage. Les deux rendus sont équivalents : arguments Traefik identiques au
 caractère près, diff complet des manifests limité au label `helm.sh/chart`.
 Sur 1.23, `maxSurge` (DaemonSet) et `internalTrafficPolicy` sont en bêta plutôt
@@ -45,7 +45,7 @@ depuis février 2023.
 Piège en changeant de majeure : le chart amont a un schéma JSON qui **rejette**
 les clés de l'autre forme.
 
-| Clé en 41.x (ce chart) | Clé en 39.x (`0.6.2`) |
+| Clé en 41.x (ce chart) | Clé en 39.x (`0.6.3`) |
 |---|---|
 | `service.spec.type`, `service.spec.externalTrafficPolicy` | `service.type`, `service.externalTrafficPolicy` |
 | `log` / `accessLog` | `logs.general` / `logs.access` |

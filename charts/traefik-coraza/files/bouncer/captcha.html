@@ -149,9 +149,16 @@
                 max-width: 180px;
             }
 
+            /* L'HÔTE porte la largeur. Sans `width` ici, il se cale sur son
+               contenu, dont la largeur est un pourcentage de… l'hôte : référence
+               circulaire, résolue à zéro — il ne reste que la bordure (constaté
+               sur Android en portrait). Pas de `zoom` par-dessus un 100 % : il
+               ferait déborder le widget de la carte. */
             cap-widget {
+                display: block;
+                width: 100%;
                 --cap-widget-width: 100%;
-                zoom: 1.05;
+                zoom: 1;
             }
 
             h1 {

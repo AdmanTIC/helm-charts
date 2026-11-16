@@ -806,7 +806,7 @@ standaloneNaming:
 # -----------------------------------------------------------------------------
 #  Subchart Traefik — overrides
 #  Clés alignées sur le chart 41.0.2 (cf. Chart.yaml). Deux d'entre elles ont
-#  une autre forme dans la majeure 39, celle de la release 0.6.2 (K8s 1.23) :
+#  une autre forme dans la majeure 39, celle de la release 0.6.3 (K8s 1.23) :
 #      `service.spec.type`             ← `service.type` en 39.x
 #      `service.spec.externalTrafficPolicy` ← `service.externalTrafficPolicy`
 #      `log`/`accessLog`               ← `logs.general`/`logs.access`
@@ -1345,7 +1345,7 @@ traefik:
   service:
     enabled: true
     # Chart 41.x : le type et le reste du ServiceSpec passent par `spec`.
-    # (En 39.x c'étaient des clés directes — cf. la release 0.6.2, compatible
+    # (En 39.x c'étaient des clés directes — cf. la release 0.6.3, compatible
     # K8s 1.23.)
     spec:
       type: NodePort
@@ -1428,7 +1428,7 @@ traefik:
 
   # --- Observabilité ---------------------------------------------------------
   # Chart 41.x : `log` et `accessLog` sont deux clés de premier niveau. (En
-  # 39.x c'était `logs.general` / `logs.access` — cf. la release 0.6.2.)
+  # 39.x c'était `logs.general` / `logs.access` — cf. la release 0.6.3.)
   log:
     level: INFO
     format: json
