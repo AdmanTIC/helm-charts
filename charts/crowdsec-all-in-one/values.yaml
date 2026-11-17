@@ -749,7 +749,8 @@ agentDataPvc:
 #
 # Reprise si la machine a été supprimée de la LAPI (agent en 401) : supprimer
 # local_api_credentials.yaml du PVC puis relancer le pod (ré-enregistrement). Si le PVC a été
-# perdu alors que la machine existe encore : `cscli machines delete <machineName>` sur la LAPI.
+# perdu alors que la machine existe encore, l'init ne bloque pas : il s'enregistre sous
+# <machineName>-<timestamp> ; l'ancienne machine reste à purger (`cscli machines delete`).
 agentPersistentCredentials:
   enabled: false
   # Nom de la machine dans la LAPI. Défaut : <release>-agent.

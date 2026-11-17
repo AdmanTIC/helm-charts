@@ -20,6 +20,12 @@ printf '%s\n' "$OUT" | yq -e 'select(.kind == "ConfigMap" and .metadata.name == 
   || fail "acquis-configmap absent ou vide"
 printf '%s\n' "$OUT" | yq -e 'select(.kind == "PersistentVolumeClaim" and .metadata.name == "crowdsec-agent-config-pvc")' >/dev/null \
   || fail "PVC crowdsec-agent-config-pvc absent"
+# machine déjà connue de la LAPI sans identifiants dans le PVC : l'init ne doit pas rester bloqué
+SCRIPT=$(printf '%s\n' "$INIT" | yq '.command[2]')
+sh -n -c "$SCRIPT" || fail "script de l'init invalide"
+grep -q 'if cscli lapi register' <<<"$SCRIPT" || fail "l'échec de cscli lapi register doit être rattrapé"
+grep -q 'register --machine "\$USERNAME-' <<<"$SCRIPT" || fail "pas de ré-enregistrement sous un nom suffixé en dernier recours"
+grep -q 'mv .* "\$CREDS"' <<<"$SCRIPT" || fail "l'init doit persister les identifiants dans le PVC dès l'enregistrement"
 # machineName surchargé
 render --set crowdsec.agent.enabled=false --set agentPersistentCredentials.enabled=true --set agentPersistentCredentials.machineName=bkp \
   | yq -e 'select(.kind == "DaemonSet") | .spec.template.spec.initContainers[0].env[] | select(.name == "USERNAME") | .value == "bkp"' >/dev/null \

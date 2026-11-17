@@ -5,7 +5,9 @@
 # Copie de upstream charts/crowdsec/templates/agent-daemonset.yaml. Différences :
 #   - l'init monte le PVC de config et RÉUTILISE local_api_credentials.yaml s'il y est déjà,
 #     au lieu de ré-enregistrer une machine à chaque (re)création de sandbox (reboot du nœud →
-#     « user already exist » et pod bloqué en Init) ;
+#     « user already exist » et pod bloqué en Init) ; si la LAPI refuse quand même
+#     l'enregistrement (machine connue, identifiants absents du PVC), il attend ceux d'un autre
+#     agent puis, à défaut, s'enregistre sous un nom suffixé au lieu d'échouer indéfiniment ;
 #   - le nom de machine est stable (agentPersistentCredentials.machineName, défaut <release>-agent)
 #     au lieu du nom du pod, qui laissait une machine orpheline dans la LAPI à chaque pod ;
 #   - checksums calculés sur les values (les templates upstream ne sont pas inclus ici).
@@ -68,15 +70,33 @@ spec:
           - -c
           - |
             until nc "$LAPI_HOST" "$LAPI_PORT" -z; do echo waiting for lapi to start; sleep 5; done
-            if [ -s /etc/crowdsec_data/local_api_credentials.yaml ]; then
-              echo "réutilisation de local_api_credentials.yaml du PVC (machine $(sed -n 's/^login: *//p' /etc/crowdsec_data/local_api_credentials.yaml)), pas de ré-enregistrement"
-              cp /etc/crowdsec_data/local_api_credentials.yaml /tmp_config/local_api_credentials.yaml
+            CREDS=/etc/crowdsec_data/local_api_credentials.yaml
+            # Écrit dans le PVC dès l'enregistrement (et pas seulement au démarrage du conteneur
+            # principal) : un pod tué entre les deux ne laisse plus une machine sans identifiants.
+            persist() { cp /etc/crowdsec/local_api_credentials.yaml "$CREDS.$$" && mv "$CREDS.$$" "$CREDS"; }
+            if [ -s "$CREDS" ]; then
+              echo "réutilisation de local_api_credentials.yaml du PVC (machine $(sed -n 's/^login: *//p' "$CREDS")), pas de ré-enregistrement"
             else
               echo "pas d'identifiants dans le PVC : enregistrement de la machine $USERNAME"
               ln -s /staging/etc/crowdsec /etc/crowdsec
-              cscli lapi register --machine "$USERNAME" -u "$LAPI_URL" --token "$REGISTRATION_TOKEN"
-              cp /etc/crowdsec/local_api_credentials.yaml /tmp_config/local_api_credentials.yaml
+              if cscli lapi register --machine "$USERNAME" -u "$LAPI_URL" --token "$REGISTRATION_TOKEN"; then
+                persist
+              else
+                # Refus (typiquement 403 « user already exist ») : soit l'agent d'un autre nœud
+                # vient d'enregistrer la machine et ses identifiants arrivent dans le PVC partagé,
+                # soit ils sont perdus (mot de passe irrécupérable) et on repart sous un nom suffixé.
+                echo "enregistrement de $USERNAME refusé : attente des identifiants d'un autre agent dans le PVC"
+                i=0; until [ -s "$CREDS" ] || [ "$i" -ge 6 ]; do sleep 5; i=$((i+1)); done
+                if [ -s "$CREDS" ]; then
+                  echo "identifiants trouvés dans le PVC (machine $(sed -n 's/^login: *//p' "$CREDS"))"
+                else
+                  echo "toujours pas d'identifiants : enregistrement sous $USERNAME-$(date +%s) (l'ancienne machine $USERNAME reste à supprimer côté LAPI)"
+                  cscli lapi register --machine "$USERNAME-$(date +%s)" -u "$LAPI_URL" --token "$REGISTRATION_TOKEN" || exit 1
+                  persist
+                fi
+              fi
             fi
+            cp "$CREDS" /tmp_config/local_api_credentials.yaml
       {{- else }}
       - name: wait-for-lapi
         image: "{{ .Values.agent.wait_for_lapi.image.repository }}:{{ .Values.agent.wait_for_lapi.image.tag }}"

@@ -163,7 +163,10 @@ au nom stable est enregistrée. À re-synchroniser avec upstream à chaque mont�
 Incompatible avec `tls.agent.tlsClientAuth` (qui n'a pas ce problème).
 
 Reprise : machine supprimée de la LAPI (agent en 401) → supprimer `local_api_credentials.yaml`
-du PVC et relancer le pod ; PVC perdu alors que la machine existe → `cscli machines delete`.
+du PVC et relancer le pod. Machine connue de la LAPI mais identifiants absents du PVC (PVC
+perdu, pod tué juste après l'enregistrement) : l'init ne bloque plus sur `user already exist`,
+il attend 30 s les identifiants d'un autre agent puis s'enregistre sous
+`<machineName>-<timestamp>` ; l'ancienne machine reste à purger (`cscli machines delete`).
 
 ### 3. WebUI — exposition
 
