@@ -1,7 +1,7 @@
 {{- if .Values.agentPersistentCredentials.enabled }}
 {{- include "crowdsec-all-in-one.agent.context" . }}
 {{- $machine := .Values.agentPersistentCredentials.machineName | default (printf "%s-agent" .Release.Name) }}
-{{- with (dict "Values" (fromYaml (include "crowdsec-all-in-one.agent.values" .)) "Release" .Release "Chart" .Chart "Machine" $machine) }}
+{{- with (dict "Values" (fromYaml (include "crowdsec-all-in-one.agent.values" .)) "Release" .Release "Chart" .Chart "Machine" $machine "AsDeployment" .Values.agentKubernetesAcquisition.enabled) }}
 # Copie de upstream charts/crowdsec/templates/agent-daemonset.yaml. Différences :
 #   - l'init monte le PVC de config et RÉUTILISE local_api_credentials.yaml s'il y est déjà,
 #     au lieu de ré-enregistrer une machine à chaque (re)création de sandbox (reboot du nœud →
@@ -10,9 +10,11 @@
 #     agent puis, à défaut, s'enregistre sous un nom suffixé au lieu d'échouer indéfiniment ;
 #   - le nom de machine est stable (agentPersistentCredentials.machineName, défaut <release>-agent)
 #     au lieu du nom du pod, qui laissait une machine orpheline dans la LAPI à chaque pod ;
+#   - rendu en Deployment à un seul réplica (Recreate) quand agentKubernetesAcquisition est
+#     activé : l'agent lit alors les logs par l'API Kubernetes, un pod par nœud est inutile ;
 #   - checksums calculés sur les values (les templates upstream ne sont pas inclus ici).
 apiVersion: apps/v1
-kind: DaemonSet
+kind: {{ ternary "Deployment" "DaemonSet" .AsDeployment }}
 metadata:
   name: {{ .Release.Name }}-agent
   labels:
@@ -24,6 +26,11 @@ metadata:
 {{ toYaml .Values.agent.daemonsetAnnotations | trim | indent 4 }}
   {{- end }}
 spec:
+  {{- if .AsDeployment }}
+  replicas: 1
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       k8s-app: {{ .Release.Name }}
@@ -243,7 +250,7 @@ spec:
           {{- range $stage, $stageConfig := .Values.config.parsers -}}
           {{- if $stageConfig -}}
           {{ range $fileName, $content := $stageConfig -}}
-          - name: {{ printf "crowdsec-parsers-%s-%s" $stage (trimSuffix ".yaml" $fileName) }}
+          - name: {{ include "crowdsec.volumeName" (printf "crowdsec-parsers-%s-%s" $stage $fileName) }}
             mountPath: {{ printf "%s/parsers/%s/%s" $crowdsecConfig $stage $fileName }}
             subPath: {{ $fileName }}
           {{ end }}
@@ -252,7 +259,7 @@ spec:
           {{- end }}
           {{- if .Values.config.scenarios -}}
           {{ range $fileName, $content := .Values.config.scenarios -}}
-          - name: {{ printf "crowdsec-scenarios-%s" (trimSuffix ".yaml" $fileName) }}
+          - name: {{ include "crowdsec.volumeName" (printf "crowdsec-scenarios-%s" $fileName) }}
             mountPath: {{ printf "%s/scenarios/%s" $crowdsecConfig $fileName }}
             subPath: {{ $fileName }}
           {{ end }}
@@ -261,7 +268,7 @@ spec:
           {{- range $stage, $stageConfig := .Values.config.postoverflows -}}
           {{- if $stageConfig -}}
           {{ range $fileName, $content := $stageConfig -}}
-          - name: {{ printf "crowdsec-postoverflows-%s-%s" $stage (trimSuffix ".yaml" $fileName) }}
+          - name: {{ include "crowdsec.volumeName" (printf "crowdsec-postoverflows-%s-%s" $stage $fileName) }}
             mountPath: {{ printf "%s/postoverflows/%s/%s" $crowdsecConfig $stage $fileName }}
             subPath: {{ $fileName }}
           {{ end }}
@@ -321,7 +328,7 @@ spec:
       {{- range $stage, $stageConfig := .Values.config.parsers -}}
       {{- if $stageConfig -}}
       {{ range $fileName, $content := $stageConfig -}}
-      - name: {{ printf "crowdsec-parsers-%s-%s" $stage (trimSuffix ".yaml" $fileName) }}
+      - name: {{ include "crowdsec.volumeName" (printf "crowdsec-parsers-%s-%s" $stage $fileName) }}
         configMap:
           name: {{ printf "crowdsec-parsers-%s" $stage }}
           items:
@@ -333,7 +340,7 @@ spec:
       {{- end }}
       {{- if .Values.config.scenarios -}}
       {{ range $fileName, $content := .Values.config.scenarios -}}
-      - name: {{ printf "crowdsec-scenarios-%s" (trimSuffix ".yaml" $fileName) }}
+      - name: {{ include "crowdsec.volumeName" (printf "crowdsec-scenarios-%s" $fileName) }}
         configMap:
           name: "crowdsec-scenarios"
           items:
@@ -345,7 +352,7 @@ spec:
       {{- range $stage, $stageConfig := .Values.config.postoverflows -}}
       {{- if $stageConfig -}}
       {{ range $fileName, $content := $stageConfig -}}
-      - name: {{ printf "crowdsec-postoverflows-%s-%s" $stage (trimSuffix ".yaml" $fileName) }}
+      - name: {{ include "crowdsec.volumeName" (printf "crowdsec-postoverflows-%s-%s" $stage $fileName) }}
         configMap:
           name: {{ printf "crowdsec-postoverflows-%s" $stage }}
           items:

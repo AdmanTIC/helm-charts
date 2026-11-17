@@ -1,5 +1,6 @@
 {{- if and .Values.collectionsJob.enabled .Values.collectionsJob.agentRestartJob.enabled }}
-# ServiceAccount + Role + RoleBinding + Job pour restart le DaemonSet agent
+# ServiceAccount + Role + RoleBinding + Job pour restart l'agent (DaemonSet, ou Deployment
+# si agentKubernetesAcquisition ou crowdsec.agent.isDeployment)
 # après le hook install-collections (sync-wave 5 > 0).
 #
 # Rationale sur le split hook / regular :
@@ -40,7 +41,7 @@ metadata:
     "argocd.argoproj.io/sync-options": ServerSideApply=true,Force=true
 rules:
   - apiGroups: ["apps"]
-    resources: ["daemonsets"]
+    resources: ["daemonsets", "deployments"]
     verbs: ["get", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -99,7 +100,7 @@ spec:
             - kubectl
             - rollout
             - restart
-            - daemonset/{{ .Release.Name }}-agent
+            - {{ ternary "deployment" "daemonset" (or .Values.agentKubernetesAcquisition.enabled (and .Values.crowdsec.agent.enabled (default false .Values.crowdsec.agent.isDeployment))) }}/{{ .Release.Name }}-agent
             - --namespace
             - {{ .Release.Namespace }}
 {{- end }}

@@ -379,7 +379,7 @@ webui:
     # ci-dessous sont conservées : elles alimentent la migration one-shot vers
     # /app/data/config.yaml au 1er démarrage. Pour un contrôle continu, préférer
     # les env `CONFIG_*` (cf. bloc `sso.oidc` plus bas).
-    tag: 2026.8.3
+    tag: 2026.11.12
 
   imagePullSecrets: []
   nameOverride: webui
@@ -768,6 +768,42 @@ agentPersistentCredentials:
   #     poll_without_inotify: true
   #     program: traefik
 
+# =============================================================================
+#  Acquisition des logs par l'API Kubernetes (agentKubernetesAcquisition) — optionnel
+# =============================================================================
+# Alternative au fonctionnement historique (DaemonSet + hostPath /var/log, toujours le défaut) :
+# depuis CrowdSec 1.8, la source `kubernetes` lit les logs des pods via l'API server. Un seul
+# agent suffit alors : la copie locale de l'agent (agentPersistentCredentials, obligatoire ici
+# car le schéma du sous-chart refuse cette source) est rendue en Deployment à un réplica, sans
+# hostPath, avec un ServiceAccount et un Role (pods + pods/log) dans chaque namespace suivi.
+# Plus de pod par nœud ni de ré-enregistrement au reboot d'un nœud. En contrepartie tous les
+# logs suivis transitent par l'API server, et un flux coupé (redémarrage de l'agent ou de l'API
+# server) peut laisser un trou.
+#
+#   crowdsec:
+#     agent:
+#       enabled: false
+#   agentPersistentCredentials:
+#     enabled: true
+#   agentKubernetesAcquisition:
+#     enabled: true
+#     sources:
+#       - namespace: ingress-controller
+#         selector: app.kubernetes.io/name=traefik
+#         program: traefik
+#
+# Ces sources REMPLACENT les sources fichiers (crowdsec.agent.acquisition est ignoré,
+# agentPersistentCredentials.acquisition doit rester vide) ; crowdsec.agent.additionalAcquisition
+# est conservé. La NetworkPolicy du chart autorise déjà la sortie vers l'API server (443/6443).
+agentKubernetesAcquisition:
+  enabled: false
+  # ServiceAccount créé pour l'agent. Défaut : <release>-agent.
+  serviceAccountName: ""
+  # Pods à suivre. namespace : où vivent les pods (le Role y est créé) ; selector : sélecteur de
+  # labels Kubernetes ; program : parser CrowdSec à appliquer (nginx, traefik, …), posé en
+  # `labels.type` car les lignes arrivent brutes, sans préfixe du runtime de containers.
+  sources: []
+
 collectionsJob:
   enabled: true
   # image : hérite de crowdsec.image (repository / tag / pullPolicy du sub-chart).
@@ -785,13 +821,13 @@ collectionsJob:
   postoverflows: []
 
   # ---------------------------------------------------------------------------
-  # agentRestartJob — restart du DaemonSet agent après l'installation
+  # agentRestartJob — restart de l'agent (DaemonSet ou Deployment) après l'installation
   # ---------------------------------------------------------------------------
   # Hook PostSync (sync-wave 5, donc APRÈS collectionsJob wave 0) qui exécute
   # `kubectl rollout restart daemonset/<release>-agent`. Force l'agent à
   # recharger le hub content fraîchement installé (sinon il faut attendre un
   # redéploiement ou un kill manuel).
-  # Nécessite RBAC : ServiceAccount + Role "patch daemonsets" — créés
+  # Nécessite RBAC : ServiceAccount + Role "patch daemonsets/deployments" — créés
   # automatiquement par templates/restart-agent-job.yaml et supprimés à la fin.
   agentRestartJob:
     enabled: true

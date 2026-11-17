@@ -51,6 +51,40 @@ grep -qF '/var/log/containers/traefik-*_ingress-controller_traefik-*.log' <<<"$A
 grep -qF '/var/log/containers/nginx-*_ingress-controller_*-*.log' <<<"$ACQ" || fail "containerName par défaut doit être *"
 grep -qF 'nginx-ingress-ingress-nginx-controller' <<<"$ACQ" && fail "agentPersistentCredentials.acquisition doit remplacer crowdsec.agent.acquisition"
 
+# --- agentKubernetesAcquisition ----------------------------------------------------------
+KA=(--set crowdsec.agent.enabled=false --set agentPersistentCredentials.enabled=true --set agentKubernetesAcquisition.enabled=true
+  --set 'agentKubernetesAcquisition.sources[0].namespace=ingress-controller' --set 'agentKubernetesAcquisition.sources[0].selector=app.kubernetes.io/name=traefik' --set 'agentKubernetesAcquisition.sources[0].program=traefik'
+  --set 'agentKubernetesAcquisition.sources[1].namespace=ingress-controller' --set 'agentKubernetesAcquisition.sources[1].selector=app.kubernetes.io/name=ingress-nginx' --set 'agentKubernetesAcquisition.sources[1].program=nginx')
+OUT=$(render "${KA[@]}")
+AG=$(printf '%s\n' "$OUT" | yq 'select(.kind == "Deployment" and .metadata.name == "crowdsec-agent")')
+[ -n "$AG" ] || fail "acquisition API : Deployment crowdsec-agent absent"
+printf '%s\n' "$AG" | yq -e '.spec.replicas == 1 and .spec.strategy.type == "Recreate" and .spec.template.spec.serviceAccountName == "crowdsec-agent"' >/dev/null \
+  || fail "acquisition API : Deployment attendu à 1 réplica, Recreate, avec le ServiceAccount de l'agent"
+[ -z "$(printf '%s\n' "$OUT" | yq 'select(.kind == "DaemonSet" and .metadata.name == "crowdsec-agent")')" ] || fail "acquisition API : le DaemonSet agent ne doit plus être rendu"
+[ -z "$(printf '%s\n' "$AG" | yq '.spec.template.spec.volumes[] | select(.hostPath)')" ] || fail "acquisition API : plus aucun hostPath attendu"
+printf '%s\n' "$AG" | yq -e '.spec.template.spec.initContainers[0].command[2] | test("du PVC")' >/dev/null || fail "acquisition API : l'init doit garder la réutilisation des identifiants"
+ACQ=$(printf '%s\n' "$OUT" | yq 'select(.kind == "ConfigMap" and .metadata.name == "acquis-configmap") | .data["acquis.yaml"]')
+grep -q '/var/log/containers' <<<"$ACQ" && fail "acquisition API : aucune source fichier attendue"
+[ "$(yq ea '[select(.source == "kubernetes" and .namespace == "ingress-controller")] | length' <<<"$ACQ")" = 2 ] || fail "acquisition API : deux sources kubernetes attendues dans acquis.yaml"
+yq -e 'select(.selector == "app.kubernetes.io/name=traefik") | .labels.type == "traefik"' <<<"$ACQ" >/dev/null || fail "acquisition API : program doit devenir labels.type"
+printf '%s\n' "$OUT" | yq -e 'select(.kind == "ServiceAccount" and .metadata.name == "crowdsec-agent")' >/dev/null || fail "acquisition API : ServiceAccount absent"
+[ "$(printf '%s\n' "$OUT" | yq 'select(.kind == "Role" and (.metadata.name | test("agent-log-reader$"))) | .metadata.namespace')" = "ingress-controller" ] \
+  || fail "acquisition API : un seul Role attendu, dans le namespace des pods suivis"
+printf '%s\n' "$OUT" | yq -e 'select(.kind == "Role" and (.metadata.name | test("agent-log-reader$"))) | .rules[] | select(.resources[0] == "pods/log") | .verbs[0] == "get"' >/dev/null \
+  || fail "acquisition API : le Role doit donner get sur pods/log"
+printf '%s\n' "$OUT" | yq -e 'select(.kind == "RoleBinding" and (.metadata.name | test("agent-log-reader$"))) | .subjects[0] | (.name == "crowdsec-agent" and .namespace == "crowdsec")' >/dev/null \
+  || fail "acquisition API : RoleBinding non lié au ServiceAccount de l'agent"
+printf '%s\n' "$OUT" | yq -e 'select(.kind == "Job" and (.metadata.name | test("restart-agent$"))) | .spec.template.spec.containers[0].command[3] == "deployment/crowdsec-agent"' >/dev/null \
+  || fail "acquisition API : le job de restart doit viser le Deployment"
+render | yq -e 'select(.kind == "Job" and (.metadata.name | test("restart-agent$"))) | .spec.template.spec.containers[0].command[3] == "daemonset/crowdsec-agent"' >/dev/null \
+  || fail "par défaut, le job de restart doit viser le DaemonSet"
+[ -z "$(render | yq 'select(.metadata.name | test("agent-log-reader$"))')" ] || fail "par défaut, aucun RBAC d'acquisition API"
+# gardes
+if render --set agentKubernetesAcquisition.enabled=true >/dev/null 2>&1; then fail "acquisition API : doit exiger agentPersistentCredentials"; fi
+if render --set crowdsec.agent.enabled=false --set agentPersistentCredentials.enabled=true --set agentKubernetesAcquisition.enabled=true >/dev/null 2>&1; then fail "acquisition API : doit exiger des sources"; fi
+if render "${KA[@]}" --set 'agentKubernetesAcquisition.sources[1].selector=' >/dev/null 2>&1; then fail "acquisition API : doit exiger selector"; fi
+if render "${KA[@]}" --set 'agentPersistentCredentials.acquisition[0].namespace=x' >/dev/null 2>&1; then fail "acquisition API : doit refuser les sources fichiers locales"; fi
+
 # --- NetworkPolicy LAPI : namespace de l'ingress controller d'office ----------------------
 NP_LAPI() { yq 'select(.kind == "NetworkPolicy" and (.metadata.name | test("-lapi-ingress$")))'; }
 render | NP_LAPI | yq -e '.spec.ingress[0].from[] | select(.namespaceSelector.matchLabels["kubernetes.io/metadata.name"] == "ingress-controller")' >/dev/null \

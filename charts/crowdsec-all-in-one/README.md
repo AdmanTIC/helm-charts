@@ -168,6 +168,39 @@ perdu, pod tué juste après l'enregistrement) : l'init ne bloque plus sur `user
 il attend 30 s les identifiants d'un autre agent puis s'enregistre sous
 `<machineName>-<timestamp>` ; l'ancienne machine reste à purger (`cscli machines delete`).
 
+### 2 ter. Acquisition des logs par l'API Kubernetes (`agentKubernetesAcquisition`, optionnel)
+
+Par défaut l'agent reste un DaemonSet qui lit `/var/log/containers` sur chaque nœud. Depuis
+CrowdSec 1.8, la source `kubernetes` lit les logs des pods via l'API server : un seul agent
+suffit, sans `hostPath`.
+
+```yaml
+crowdsec:
+  agent:
+    enabled: false
+agentPersistentCredentials:
+  enabled: true                    # obligatoire : l'agent est rendu par la copie locale
+agentKubernetesAcquisition:
+  enabled: true
+  serviceAccountName: ""           # défaut : <release>-agent
+  sources:
+    - namespace: ingress-controller              # namespace des pods (le Role y est créé)
+      selector: app.kubernetes.io/name=traefik   # sélecteur de labels Kubernetes
+      program: traefik                           # parser CrowdSec
+```
+
+Effets : la copie locale de l'agent devient un Deployment à un réplica (`Recreate`), sans
+montage `/var/log` ; un ServiceAccount et, par namespace suivi, un Role `pods` (get/list/watch)
++ `pods/log` (get) sont créés ; le job de restart vise le Deployment. Les sources fichiers sont
+remplacées (`crowdsec.agent.acquisition` ignoré, `agentPersistentCredentials.acquisition` doit
+rester vide) ; `crowdsec.agent.additionalAcquisition` est conservé.
+
+La copie locale est requise parce que le schéma JSON du sous-chart 0.24.3 refuse
+`source: kubernetes` dans `crowdsec.agent.additionalAcquisition`.
+
+À savoir avant de l'activer : tous les logs suivis transitent par l'API server, et un flux
+coupé (redémarrage de l'agent ou de l'API server) peut laisser un trou dans les logs analysés.
+
 ### 3. WebUI — exposition
 
 Trois modes d'exposition supportés, mutuellement exclusifs :

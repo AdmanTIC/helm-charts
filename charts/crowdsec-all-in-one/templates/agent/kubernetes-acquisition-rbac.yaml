@@ -1,0 +1,56 @@
+{{- if .Values.agentKubernetesAcquisition.enabled }}
+{{- /*
+Droits de l'agent pour lire les logs par l'API Kubernetes (source `kubernetes`, CrowdSec >= 1.8) :
+un ServiceAccount, et dans chaque namespace de agentKubernetesAcquisition.sources un Role
+(pods + pods/log) lié à ce ServiceAccount. L'agent lui-même est la copie locale
+(templates/agent/daemonset.yaml), rendue en Deployment dans ce mode.
+*/}}
+{{- if not .Values.agentPersistentCredentials.enabled }}
+{{- fail "agentKubernetesAcquisition.enabled exige agentPersistentCredentials.enabled=true (et crowdsec.agent.enabled=false) : le schéma du sous-chart refuse la source kubernetes, l'agent est donc rendu par la copie locale" }}
+{{- end }}
+{{- $sa := include "crowdsec-all-in-one.agent.kubernetesServiceAccount" . }}
+{{- $namespaces := list }}
+{{- range .Values.agentKubernetesAcquisition.sources }}
+{{- $namespaces = append $namespaces .namespace }}
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $sa }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crowdsec-all-in-one.labels" . | nindent 4 }}
+{{- range $namespaces | uniq | sortAlpha }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "crowdsec-all-in-one.fullname" $ }}-agent-log-reader
+  namespace: {{ . }}
+  labels:
+    {{- include "crowdsec-all-in-one.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "crowdsec-all-in-one.fullname" $ }}-agent-log-reader
+  namespace: {{ . }}
+  labels:
+    {{- include "crowdsec-all-in-one.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "crowdsec-all-in-one.fullname" $ }}-agent-log-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}
