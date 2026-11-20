@@ -31,6 +31,36 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.webui.hideDeleteAllForIp }}
+      initContainers:
+        # Masque le bouton « tout supprimer pour cette IP » (icône ShieldBan,
+        # pages Décisions et Alertes) : plusieurs bouncers ne répercutent pas
+        # cette suppression groupée. L'image n'offre aucune option pour ça ;
+        # index.html est relu sur disque à chaque requête et la CSP autorise
+        # les styles inline, donc on en sert une copie avec une règle CSS.
+        - name: hide-delete-all-for-ip
+          {{- with .Values.webui.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.webui.image.repository }}:{{ .Values.webui.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.webui.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              SRC=/app/dist/client/index.html
+              grep -q '</head>' "$SRC" || { echo "balise </head> introuvable dans $SRC" >&2; exit 1; }
+              sed 's|</head>|<style>button:has(> svg.lucide-shield-ban){display:none !important}</style></head>|' "$SRC" > /index-patch/index.html
+          {{- with .Values.webui.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: index-patch
+              mountPath: /index-patch
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           {{- with .Values.webui.securityContext }}
@@ -135,11 +165,23 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.webui.volumeMounts }}
+          {{- if or .Values.webui.volumeMounts .Values.webui.hideDeleteAllForIp }}
           volumeMounts:
+            {{- with .Values.webui.volumeMounts }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.webui.hideDeleteAllForIp }}
+            - name: index-patch
+              mountPath: /app/dist/client/index.html
+              subPath: index.html
+              readOnly: true
+            {{- end }}
           {{- end }}
       volumes:
+        {{- if .Values.webui.hideDeleteAllForIp }}
+        - name: index-patch
+          emptyDir: {}
+        {{- end }}
         - name: data
           {{- if .Values.webui.persistence.enabled }}
           persistentVolumeClaim:

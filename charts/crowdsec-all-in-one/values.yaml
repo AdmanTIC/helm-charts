@@ -665,6 +665,15 @@ webui:
   #   - secretRef:
   #       name: my-secret
 
+  # Masque, pages Décisions et Alertes, le bouton « tout supprimer pour cette
+  # IP » (bouclier barré). Plusieurs bouncers ne répercutent pas cette
+  # suppression groupée, d'où une désynchro avec CrowdSec : on impose la
+  # suppression décision par décision (corbeille, ou « Supprimer la sélection »).
+  # Masquage visuel uniquement (CSS injecté dans index.html par un initContainer) :
+  # l'endpoint /api/cleanup/by-ip reste appelable. Le sélecteur cible l'icône
+  # `lucide-shield-ban` — à revérifier à chaque montée de version de l'image.
+  hideDeleteAllForIp: true
+
   # Additional volumes on the output Deployment definition.
   volumes: []
 

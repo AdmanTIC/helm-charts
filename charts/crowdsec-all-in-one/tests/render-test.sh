@@ -94,4 +94,25 @@ render --set networkPolicy.lapi.ingressControllerNamespace=traefik --set 'networ
   || fail "ingressControllerNamespace surchargé + from doivent coexister"
 [ -z "$(render --set networkPolicy.lapi.ingressControllerNamespace= | NP_LAPI)" ] \
   || fail "ingressControllerNamespace vide et from vide : pas de NP LAPI"
+
+# --- WebUI : bouton « tout supprimer pour cette IP » masqué ----------------------------------
+WEBUI() { yq 'select(.kind == "Deployment" and .metadata.name == "crowdsec-webui") | .spec.template.spec'; }
+SPEC=$(render | WEBUI)
+[ -n "$SPEC" ] || fail "Deployment crowdsec-webui absent"
+SCRIPT=$(yq '.initContainers[] | select(.name == "hide-delete-all-for-ip") | .command[2]' <<<"$SPEC")
+sh -n -c "$SCRIPT" || fail "WebUI : script de l'init invalide"
+grep -q 'svg.lucide-shield-ban' <<<"$SCRIPT" || fail "WebUI : la règle CSS doit cibler l'icône lucide-shield-ban"
+yq -e '.containers[0].volumeMounts[] | select(.name == "index-patch") | (.mountPath == "/app/dist/client/index.html" and .subPath == "index.html")' <<<"$SPEC" >/dev/null \
+  || fail "WebUI : index.html patché non monté par-dessus l'original"
+yq -e '.containers[0].volumeMounts[] | select(.name == "data" and .mountPath == "/app/data")' <<<"$SPEC" >/dev/null || fail "WebUI : le montage data doit rester"
+yq -e '.volumes[] | select(.name == "index-patch") | has("emptyDir")' <<<"$SPEC" >/dev/null || fail "WebUI : volume index-patch absent"
+# le sed doit réellement injecter la règle
+TMP=$(mktemp -d); mkdir -p "$TMP/out"; printf '<html><head><title>x</title>\n</head><body></body></html>\n' > "$TMP/index.html"
+sh -c "$(sed -e "s|/app/dist/client/index.html|$TMP/index.html|" -e "s|/index-patch/|$TMP/out/|" <<<"$SCRIPT")" || fail "WebUI : le script de l'init échoue"
+grep -q '<style>button:has(> svg.lucide-shield-ban){display:none !important}</style></head>' "$TMP/out/index.html" || fail "WebUI : règle CSS non injectée"
+rm -rf "$TMP"
+# désactivable
+SPEC=$(render --set webui.hideDeleteAllForIp=false | WEBUI)
+[ "$(yq '.initContainers | length' <<<"$SPEC")" = 0 ] || fail "WebUI : pas d'init attendu quand hideDeleteAllForIp=false"
+[ "$(yq '[.containers[0].volumeMounts[], .volumes[]] | map(select(.name == "index-patch")) | length' <<<"$SPEC")" = 0 ] || fail "WebUI : aucun volume index-patch attendu quand hideDeleteAllForIp=false"
 echo "OK : tests de rendu passés"

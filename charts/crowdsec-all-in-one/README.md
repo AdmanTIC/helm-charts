@@ -304,6 +304,22 @@ l'image.
 Le compte admin local reste créé automatiquement par le hook `register-job.yaml`
 (cf. section 3) — utile en fallback si l'IdP est indisponible.
 
+### 4 bis. WebUI — suppression par IP masquée (`webui.hideDeleteAllForIp`)
+
+Sur les pages Décisions et Alertes, chaque ligne propose deux suppressions : le
+bouclier barré (toutes les décisions de l'IP) et la corbeille (la décision
+ciblée). Plusieurs bouncers ne répercutent pas la suppression groupée par IP,
+ce qui désynchronise CrowdSec et les bouncers. Par défaut
+(`webui.hideDeleteAllForIp: true`), le chart masque donc le bouclier : les
+décisions d'une IP se suppriment une à une (corbeille ou « Supprimer la
+sélection »).
+
+L'image n'ayant pas d'option pour ça, un initContainer copie `index.html` et y
+injecte une règle CSS ciblant l'icône `lucide-shield-ban`. Deux limites :
+
+- le masquage est visuel, l'endpoint `/api/cleanup/by-ip` reste appelable ;
+- à chaque montée de version de l'image, vérifier que le bouton reste masqué.
+
 ### 5. Collections / parsers / scenarios
 
 Deux sources d'items possibles, complémentaires :
